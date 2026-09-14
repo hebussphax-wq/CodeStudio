@@ -167,6 +167,8 @@ class AutonomyTests(unittest.TestCase):
         timer.cancel()
         self.assertLess(time.monotonic()-start,1)
         self.assertEqual(result['status'],'cancelled')
+        self.assertEqual(result['model_calls'], 1)
+        self.assertEqual(json.loads(run.path.read_text())['model_calls'], 1)
     def test_actual_json_retry_counts_towards_budget(self):
         run=self.run_new(limits={'model_calls':4})
         run.core.model_calls=3

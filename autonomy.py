@@ -289,6 +289,8 @@ class AutonomousRun:
             self.receipt['after'] = {p:identity(self.core.workspace,p) for p in self.tx.files}
         finally:
             self.core.pending.clear()
+            # Cancellation/failure may occur between progress saves.
+            self.receipt['model_calls'] = self.core.model_calls
             self.receipt['finished_at']=time.time()
             errors=[]
             for target in (self.path,self.tx.root/'effect-receipt.json'):
