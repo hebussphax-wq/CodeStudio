@@ -16,34 +16,37 @@ class Engine {
   this.child.stdout.setEncoding('utf8');
   this.child.stdout.on('data',chunk=>{
    this.buffer+=chunk;
-   if(Buffer.byteLength(this.buffer)>8*1024*1024){this.fail(Error('CodeStudio-Antwort zu groß.'));this.child.kill();return;}
-   let end;while((end=this.buffer.indexOf('\n'))>=0){const line=this.buffer.slice(0,end);this.buffer=this.buffer.slice(end+1);try{const r=JSON.parse(line);if(r.event==='log'){output.appendLine(r.text);continue;}const p=this.pending.get(r.id);if(p){this.pending.delete(r.id);r.ok?p.resolve(r.result):p.reject(Error(r.error));}}catch(e){this.fail(e);}}
+   if(Buffer.byteLength(this.buffer)>8*1024*1024){this.dispose();this.fail(Error('CodeStudio-Antwort zu groß. Auftrag wird gestoppt; Beleg prüfen.'));return;}
+   let end;while((end=this.buffer.indexOf('\n'))>=0){const line=this.buffer.slice(0,end);this.buffer=this.buffer.slice(end+1);try{const r=JSON.parse(line);if(r.event==='log'){output.appendLine(r.text);continue;}if(r.event==='autonomous'){this.onEvent?.(r);continue;}const p=this.pending.get(r.id);if(p){this.pending.delete(r.id);r.ok?p.resolve(r.result):p.reject(Error(r.error));}}catch(e){this.fail(e);}}
   });
   this.child.stderr.resume();
   this.child.on('error',e=>this.fail(e));this.child.on('close',()=>this.fail(Error('CodeStudio-Kern beendet. Eventuelle Änderungen anhand der Laufbelege prüfen.')));
   this.child.stdin.on('error',e=>this.fail(e));
  }
- request(command,data={}){if(this.closed)return Promise.reject(Error('CodeStudio-Kern ist nicht mehr verbunden.'));return new Promise((resolve,reject)=>{const id=++this.sequence;this.pending.set(id,{resolve,reject,command});this.child.stdin.write(JSON.stringify({id,command,...data})+'\n');});}
+ request(command,data={}){if(command==='autonomous')this.autonomousId=data.run_id;if(this.closed)return Promise.reject(Error('CodeStudio-Kern ist nicht mehr verbunden.'));return new Promise((resolve,reject)=>{const id=++this.sequence;this.pending.set(id,{resolve,reject,command});this.child.stdin.write(JSON.stringify({id,command,...data})+'\n');});}
  fail(error){this.closed=true;for(const p of this.pending.values())p.reject(error);this.pending.clear();}
- dispose(){const applying=[...this.pending.values()].some(p=>p.command==='apply');this.child.stdin.end();if(!applying)this.child.kill();}
+ dispose(){const working=[...this.pending.values()].some(p=>p.command==='apply'||p.command==='autonomous');if(this.autonomousId&&!this.closed)this.child.stdin.write(JSON.stringify({command:'cancel',run_id:this.autonomousId})+'\n');this.child.stdin.end();if(!working)this.child.kill();}
 }
 
 function activate(context){
  const output=vscode.window.createOutputChannel('CodeStudio');
  const changed=new vscode.EventEmitter(),documents=new Map();
- let engine=null,folder=null,proposal=null,busy=false,status='Projekt öffnen und Aufgabe beschreiben';
+ let engine=null,folder=null,proposal=null,busy=false,activeRun=null,status='Projekt öffnen und Aufgabe beschreiben';
  const boundWorkspaces=new Map();
  const config=()=>vscode.workspace.getConfiguration('codestudio',folder?.uri);
- const settingsIdentity=()=>JSON.stringify({model:config().get('model'),context:config().get('contextTokens'),tests:config().get('testCommand',[]),hostBinding:config().get('hostBinding','')});
+ const settingsIdentity=()=>JSON.stringify({model:config().get('model'),context:config().get('contextTokens'),tests:config().get('testCommand',[]),hostBinding:config().get('hostBinding',''),steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),minutes:config().get('autonomousMinutes',30)});
  const item=(label,command,arg,icon)=>{const i=new vscode.TreeItem(label);if(command)i.command={command,title:label,arguments:arg===undefined?[]:[arg]};if(icon)i.iconPath=new vscode.ThemeIcon(icon);return i;};
  const provider={onDidChangeTreeData:changed.event,getTreeItem:x=>x,getChildren:()=>[
   item(status,null,null,busy?'sync~spin':'info'),
   item(config().get('hostBinding')?'Modellsteuerung: TobyKi-Hostsitzung':'Modellsteuerung: eigenständiges Ollama',null,null,'plug'),
+  item('Autonom entwickeln','codestudio.autonomous',undefined,'rocket'),
+  ...(activeRun?[item('Autonomen Auftrag stoppen','codestudio.stop',undefined,'debug-stop')]:[]),
   item('Aufgabe planen und Diff erzeugen','codestudio.generate',undefined,'edit'),
   item('Modell: '+config().get('model'),'codestudio.model',undefined,'server'),
   item('Kontext: '+config().get('contextTokens')+' Tokens','codestudio.context',undefined,'settings'),
   item(config().get('testCommand',[]).length?'Projekttests eingestellt':'Projekttests einstellen','codestudio.tests',undefined,'beaker'),
   ...(proposal?[...proposal.changes.map(c=>item(c.path,'codestudio.openDiff',c.path,'diff')),item('Geprüften Diff anwenden','codestudio.apply',undefined,'check'),item('Vorschlag verwerfen','codestudio.reject',undefined,'close')]:[]),
+  item('Autonome Aufträge und QC-Belege','codestudio.history',undefined,'history'),
   item('Ablauf und Belege','codestudio.output',undefined,'output')
  ]};
  context.subscriptions.push(output,changed,vscode.window.registerTreeDataProvider('codestudio.tasks',provider),
@@ -61,6 +64,7 @@ function activate(context){
    if(engine)engine.dispose();proposal=null;folder=selected;
    const state=path.join(context.globalStorageUri.fsPath,crypto.createHash('sha256').update(folder.uri.toString()).digest('hex').slice(0,20));
    engine=new Engine(context,folder,state,output);
+   engine.onEvent=r=>{if(activeRun&&r.status==='running'){status='Autonom: '+r.completed_steps+' Schritte bearbeitet';changed.fire();}};
   }
   return engine;
  }
@@ -69,6 +73,7 @@ function activate(context){
  async function update(key,value){if(value===undefined)return;await config().update(key,value,vscode.ConfigurationTarget.WorkspaceFolder);proposal=null;if(engine&&!engine.closed)await engine.request('reject');changed.fire();}
  async function showDiff(rel){if(!proposal)return;const change=proposal.changes.find(c=>c.path===rel);if(!change)return;const base=vscode.Uri.parse('codestudio-diff:/'+proposal.proposal_id+'/'+encodeURIComponent(rel));const before=base.with({query:'before'}),after=base.with({query:'after'});documents.set(before.toString(),change.before||'');documents.set(after.toString(),change.after||'');await vscode.commands.executeCommand('vscode.diff',before,after,rel+' · CodeStudio-Vorschlag',{preview:true});}
  const commands={
+  'codestudio.history':()=>guard(async()=>{const client=await ensure();if(!client)return;const result=await client.request('history');const chosen=await vscode.window.showQuickPick(result.runs.map(r=>({label:r.status+' · '+r.task,description:r.run_id,receipt:r.receipt_path})),{placeHolder:'Autonomen Auftrag und QC-Beleg öffnen'});if(chosen)await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(chosen.receipt)));}),
   'codestudio.output':()=>output.show(),
   'codestudio.openDiff':showDiff,
   'codestudio.model':()=>guard(async()=>{const client=await ensure();if(!client)return;const r=await client.request('models');const model=await vscode.window.showQuickPick(r.models,{placeHolder:'Installiertes Ollama-Modell'});await update('model',model);}),
@@ -89,6 +94,30 @@ function activate(context){
     if(proposal.changes.length)await showDiff(proposal.changes[0].path);
     return {proposal_id:proposal.proposal_id,diff:proposal.diff,workspace:proposal.workspace};
    }finally{busy=false;changed.fire();}
+  }),
+  'codestudio.stop':async()=>{if(engine&&activeRun){status='Stoppen und Änderungen zurückrollen';changed.fire();return engine.request('cancel',{run_id:activeRun});}},
+  'codestudio.autonomous':options=>guard(async()=>{
+   const client=await ensure();if(!client)return;
+   if(dirty())throw Error('Offene Änderungen zuerst speichern.');
+   if(!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen. Autonomer Abschluss benötigt echte Tests.');
+   const task=options?.task||await vscode.window.showInputBox({prompt:'Autonom entwickeln: Ziel und überprüfbare Akzeptanzkriterien',ignoreFocusOut:true});if(!task)return;
+   const settings=settingsIdentity(),workspace=folder.uri.toString();
+   const limits={steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),seconds:config().get('autonomousMinutes',30)*60,model_calls:80};
+   const approval=await vscode.window.showWarningMessage('CodeStudio bearbeitet '+folder.uri.fsPath+' autonom: planen, Dateien ändern, Projekttests ausführen und Fehler reparieren. Bis '+limits.steps+' Schritte, '+limits.repairs+' Reparaturen, '+(limits.seconds/60)+' Minuten. Bei Abbruch/Fehlschlag werden die eigenen Änderungen zurückgerollt. Vorhandene Tests bleiben erhalten.',{modal:true},'Autonom entwickeln');
+   if(approval!=='Autonom entwickeln')return;
+   if(dirty()||settings!==settingsIdentity()||!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===workspace))throw Error('Projekt oder Einstellungen geändert. Auftrag neu starten.');
+   busy=true;proposal=null;activeRun=crypto.randomBytes(16).toString('hex');status='Autonom: planen und abarbeiten';changed.fire();output.show(true);
+   let stopSent=false;
+   const watch=setInterval(()=>{if(!stopSent&&(dirty()||settings!==settingsIdentity()||!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===workspace))){stopSent=true;client.request('cancel',{run_id:activeRun}).catch(()=>{});}},250);
+   try{
+    await client.request('configure',{context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[])});
+    const result=await client.request('autonomous',{run_id:activeRun,approved:true,task,model:config().get('model'),limits});
+    const labels={succeeded:'Autonom abgeschlossen · Tests und QC bestanden',cancelled:'Abgebrochen · Änderungen zurückgerollt',timed_out:'Zeitbudget erreicht · zurückgerollt',budget_exhausted:'Budget erreicht · zurückgerollt',failed:'Auftrag fehlgeschlagen · zurückgerollt',conflict:'Fremde Änderung erkannt · Auftrag gestoppt',rollback_conflict:'Konflikt · Sicherung prüfen',recovery_required:'Prozessende unklar · Wiederherstellung prüfen',blocked:'Rückfrage erforderlich · Auftrag gestoppt'};
+    status=labels[result.receipt.status]||result.receipt.status;
+    output.appendLine(status+'\n'+(result.receipt.error||'')+'\n'+(result.receipt.test?.output||'')+'\nBeleg: '+result.receipt_path);
+    for(const attempt of result.receipt.attempts||[])output.appendLine(attempt.diff||'');
+    output.show(true);vscode.window.showInformationMessage(status);return result;
+   }finally{clearInterval(watch);activeRun=null;busy=false;changed.fire();}
   }),
   'codestudio.reject':()=>guard(async()=>{if(engine&&!engine.closed)await engine.request('reject');proposal=null;status='Vorschlag verworfen';changed.fire();}),
   'codestudio.apply':()=>guard(async()=>{

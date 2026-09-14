@@ -10,7 +10,7 @@ import tempfile
 BLOCKED = {'.git', '.hg', '.svn', 'node_modules', '__pycache__', '.venv', 'venv',
            'env', 'dist', 'build', 'target', '.next', '.nuxt', '.pytest_cache',
            '.mypy_cache', '.ruff_cache', '.tox', 'coverage', '.idea', '.aistudio',
-           '.codestudio', 'runs', 'backups', '.ssh', '.aws', '.azure'}
+           '.codestudio', '.codestudio-apply.lock', 'runs', 'backups', '.ssh', '.aws', '.azure'}
 SENSITIVE = re.compile(r'(^\.env($|\.)|secret|credential|private[_-]?key|^id_rsa|^id_ed25519|\.pem$|\.pfx$|^settings\.json$)', re.I)
 
 def digest(data):

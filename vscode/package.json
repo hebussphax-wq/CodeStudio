@@ -4,33 +4,144 @@
   "publisher": "tobyki",
   "version": "0.3.1",
   "description": "Ollama, geprüfte Diffs, Projekttests und Rückrollen direkt in Visual Studio Code.",
-  "engines": {"vscode": "^1.90.0"},
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./extension.js",
   "license": "MIT",
-  "activationEvents": ["onStartupFinished","onView:codestudio.tasks"],
-  "capabilities": {"untrustedWorkspaces": {"supported": false,"description": "CodeStudio liest Projektdateien und führt freigegebene Projekttests aus."},"virtualWorkspaces": false},
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:codestudio.tasks"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "CodeStudio liest Projektdateien und führt freigegebene Projekttests aus."
+    },
+    "virtualWorkspaces": false
+  },
   "contributes": {
-    "viewsContainers": {"activitybar": [{"id":"codestudio","title":"CodeStudio","icon":"media/code.svg"}]},
-    "views": {"codestudio": [{"id":"codestudio.tasks","name":"Lokales CodeStudio"}]},
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codestudio",
+          "title": "CodeStudio",
+          "icon": "media/code.svg"
+        }
+      ]
+    },
+    "views": {
+      "codestudio": [
+        {
+          "id": "codestudio.tasks",
+          "name": "Lokales CodeStudio"
+        }
+      ]
+    },
     "commands": [
-      {"command":"codestudio.generate","title":"CodeStudio: Aufgabe planen und Diff erzeugen"},
-      {"command":"codestudio.model","title":"CodeStudio: Ollama-Modell wählen"},
-      {"command":"codestudio.context","title":"CodeStudio: Kontext einstellen"},
-      {"command":"codestudio.tests","title":"CodeStudio: Projekttests einstellen"},
-      {"command":"codestudio.apply","title":"CodeStudio: Geprüften Diff anwenden"},
-      {"command":"codestudio.reject","title":"CodeStudio: Vorschlag verwerfen"},
-      {"command":"codestudio.openDiff","title":"CodeStudio: Dateiänderung ansehen"},
-      {"command":"codestudio.output","title":"CodeStudio: Ablauf und Belege anzeigen"}
+      {
+        "command": "codestudio.generate",
+        "title": "CodeStudio: Aufgabe planen und Diff erzeugen"
+      },
+      {
+        "command": "codestudio.model",
+        "title": "CodeStudio: Ollama-Modell wählen"
+      },
+      {
+        "command": "codestudio.context",
+        "title": "CodeStudio: Kontext einstellen"
+      },
+      {
+        "command": "codestudio.tests",
+        "title": "CodeStudio: Projekttests einstellen"
+      },
+      {
+        "command": "codestudio.apply",
+        "title": "CodeStudio: Geprüften Diff anwenden"
+      },
+      {
+        "command": "codestudio.reject",
+        "title": "CodeStudio: Vorschlag verwerfen"
+      },
+      {
+        "command": "codestudio.openDiff",
+        "title": "CodeStudio: Dateiänderung ansehen"
+      },
+      {
+        "command": "codestudio.output",
+        "title": "CodeStudio: Ablauf und Belege anzeigen"
+      },
+      {
+        "command": "codestudio.autonomous",
+        "title": "CodeStudio: Autonom entwickeln"
+      },
+      {
+        "command": "codestudio.stop",
+        "title": "CodeStudio: Autonomen Auftrag stoppen"
+      },
+      {
+        "command": "codestudio.history",
+        "title": "CodeStudio: Autonome Aufträge und QC-Belege"
+      }
     ],
     "configuration": {
-      "title":"CodeStudio",
+      "title": "CodeStudio",
       "properties": {
-        "codestudio.hostBinding":{"type":"string","default":"","scope":"window","description":"Projektgebundene lokale Sitzung aus TobyKi. Wird ausschließlich beim Start aus TobyKi gesetzt."},
-        "codestudio.model":{"type":"string","default":"qwen2.5-coder:7b","description":"Installiertes lokales Ollama-Modell."},
-        "codestudio.contextTokens":{"type":"number","default":16384,"minimum":1024,"maximum":262144,"description":"Kontextfenster; größere Werte benötigen mehr Modellspeicher."},
-        "codestudio.testCommand":{"type":"array","items":{"type":"string"},"default":[],"description":"Testprogramm und Argumente. Ohne Tests bleibt das Ergebnis ungeprüft."},
-        "codestudio.pythonPath":{"type":"string","default":"","description":"Absoluter Python-Pfad für die Quellentwicklung. Das Windows-Paket enthält seine Laufzeit."}
+        "codestudio.hostBinding": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "Projektgebundene lokale Sitzung aus TobyKi. Wird ausschließlich beim Start aus TobyKi gesetzt."
+        },
+        "codestudio.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Installiertes lokales Ollama-Modell."
+        },
+        "codestudio.contextTokens": {
+          "type": "number",
+          "default": 16384,
+          "minimum": 1024,
+          "maximum": 262144,
+          "description": "Kontextfenster; größere Werte benötigen mehr Modellspeicher."
+        },
+        "codestudio.testCommand": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Testprogramm und Argumente. Ohne Tests bleibt das Ergebnis ungeprüft."
+        },
+        "codestudio.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absoluter Python-Pfad für die Quellentwicklung. Das Windows-Paket enthält seine Laufzeit."
+        },
+        "codestudio.autonomousSteps": {
+          "type": "integer",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Maximale Zahl autonom geplanter Implementierungsschritte."
+        },
+        "codestudio.autonomousRepairs": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Automatische Reparaturen nach Abarbeitung des Plans."
+        },
+        "codestudio.autonomousMinutes": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Zeitbudget für einen autonomen Auftrag."
+        }
       }
     }
   }

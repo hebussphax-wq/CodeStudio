@@ -58,7 +58,7 @@ def worker_main():
                            stdin=subprocess.DEVNULL,stdout=sys.stdout,stderr=sys.stderr,
                            creationflags=0x08000000 if os.name=='nt' else 0)
 
-def run_command(argv, cwd, timeout, max_bytes=256000):
+def run_command(argv, cwd, timeout, max_bytes=256000, cancel_event=None):
     command=([sys.executable,'--test-worker'] if getattr(sys,'frozen',False)
              else [sys.executable,'-u',str(pathlib.Path(__file__).resolve()),'--test-worker'])
     child=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
@@ -82,6 +82,7 @@ def run_command(argv, cwd, timeout, max_bytes=256000):
         deadline=time.monotonic()+timeout
         status='passed'
         while child.poll() is None:
+            if cancel_event is not None and cancel_event.is_set(): status='cancelled';break
             if overflow.is_set(): status='output_limit';break
             if time.monotonic()>=deadline: status='timed_out';break
             time.sleep(.01)
@@ -97,7 +98,8 @@ def run_command(argv, cwd, timeout, max_bytes=256000):
         for thread in threads: thread.join(timeout=5)
         if any(t.is_alive() for t in threads): raise RuntimeError('Test-Ausgabekanal nicht geschlossen')
         if overflow.is_set(): status='output_limit'
-        if status=='timed_out': code=124
+        if status=='cancelled': code=130
+        elif status=='timed_out': code=124
         elif status=='output_limit': code=125
         elif code!=0: status='failed'
         return {'status':status,'returncode':code,'output':bytes(output).decode('utf-8',errors='replace'),

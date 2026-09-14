@@ -3,6 +3,14 @@
 Lokales Coding-Studio in **Visual Studio Code**, mit Scout, Planer, Coder,
 Reviewer, nativem Diffeditor, Freigabe, Projekttests und Rückrollen bei Fehlern.
 
+## Autonome Entwicklung
+
+**Autonom entwickeln** plant und bearbeitet einen Auftrag über mehrere Dateien, führt
+die eingestellten Projekttests aus und repariert Fehler selbstständig. Ein Start
+autorisiert diesen begrenzten Auftrag; einzelne Diffs brauchen dann keine weitere
+Freigabe. **Stoppen** beendet den Auftrag und rollt eigene Änderungen zurück.
+[Funktionsumfang, Grenzen und gemeinsame Workflow-Anbindung](AUTONOMOUS.md).
+
 ## Start
 
 Voraussetzungen: Visual Studio Code, Ollama und ein installiertes Coding-Modell.

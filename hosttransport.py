@@ -32,6 +32,7 @@ class HostTransport:
         if not re.fullmatch('[a-f0-9]{64}',d.get('token','')) or not isinstance(d.get('expires_at'),(int,float)):
             raise ValueError('Ungültige TobyKi-Sitzungsbindung.')
         self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+        self.request_timeout = 300
         self.check()
 
     def check(self):
@@ -48,7 +49,7 @@ class HostTransport:
         req=urllib.request.Request(self.data['endpoint'],data=body,
             headers={'Content-Type':'application/json','Authorization':'Bearer '+self.data['token']},method='POST')
         try:
-            with self.opener.open(req,timeout=300) as response:
+            with self.opener.open(req,timeout=min(300,self.request_timeout)) as response:
                 raw=response.read(3*1024*1024+1)
         except urllib.error.HTTPError as exc:
             try: message=json.loads(exc.read(4096)).get('error','Hostauftrag abgelehnt.')

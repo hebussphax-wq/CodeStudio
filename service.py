@@ -3,6 +3,9 @@ import argparse
 import json
 import pathlib
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from autonomy import AutonomousRun
 from core import CodeStudioCore
 from safety import canonical, redact, safe_path
 
@@ -12,8 +15,46 @@ class StudioService:
         self.transport = transport
         self.core = CodeStudioCore(root, config, log=lambda text: emit({'event':'log','text':redact(text)}),transport=transport)
         self.proposals = {}
+        self.active = None
+        self.state_lock = threading.Lock()
+
+    def reserve(self, request):
+        with self.state_lock:
+            if self.active: raise ValueError('Ein autonomer Auftrag läuft bereits.')
+            self.active = AutonomousRun(self.core.root,self.core.config,request,self.emit,self.transport)
+            self.proposals.clear(); self.core.pending.clear()
+            return self.active
 
     def handle(self, request):
+        command = request.get('command')
+        if command == 'status':
+            with self.state_lock:
+                run=self.active
+                return {'run_id':run.id,'status':run.receipt['status'],'steps':len(run.receipt['steps']),'model_calls':run.core.model_calls,'receipt_path':str(run.path)} if run else {'status':'idle'}
+        if command == 'history':
+            entries=[]
+            for file in sorted(self.core.runs.glob('autonomous-*.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:30]:
+                try:
+                    r=json.loads(file.read_text(encoding='utf8'))
+                    if r.get('workspace')==str(self.core.workspace):entries.append({'run_id':r['run_id'],'status':r['status'],'task':r.get('task','')[:180],'receipt_path':str(file)})
+                except (ValueError,OSError,KeyError): pass
+            return {'runs':entries}
+        if command == 'cancel':
+            with self.state_lock:
+                if not self.active or request.get('run_id') != self.active.id:
+                    raise ValueError('Kein passender aktiver autonomer Auftrag.')
+                self.active.cancel_event.set()
+                return {'status':'cancelling','run_id':self.active.id}
+        if command == 'autonomous':
+            run = self.reserve(request)
+            try: return run.execute()
+            finally:
+                with self.state_lock: self.active = None
+        with self.state_lock:
+            if self.active: raise ValueError('Autonomer Auftrag läuft; zuerst stoppen.')
+        return self._handle(request)
+
+    def _handle(self, request):
         command = request.get('command')
         if command == 'models':
             if self.transport:
@@ -72,25 +113,48 @@ def main():
     root = pathlib.Path(__file__).resolve().parent
     config = json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
     config.update(workspace=args.workspace,state_dir=args.state_dir)
+    output_lock = threading.Lock()
     def emit(value):
-        sys.stdout.buffer.write(canonical(value)+b'\n');sys.stdout.buffer.flush()
+        with output_lock:
+            sys.stdout.buffer.write(canonical(value)+b'\n');sys.stdout.buffer.flush()
     transport = None
     if args.host_binding:
         from hosttransport import HostTransport
         transport=HostTransport(args.host_binding,args.workspace)
     service = StudioService(root,config,emit,transport=transport)
-    while True:
-        line = sys.stdin.buffer.readline(1024*1024+1)
-        if not line: return 0
-        if len(line)>1024*1024:
-            emit({'ok':False,'error':'CodeStudio-Anfrage zu groß.'});return 1
-        request = {}
+    def dispatch(request, reserved=None):
         try:
-            request = json.loads(line)
-            if not isinstance(request,dict): raise ValueError('Objekt als Anfrage erforderlich.')
-            value = service.handle(request)
+            value = reserved.execute() if reserved else service.handle(request)
+            if request.get('command')=='autonomous':
+                # Full diffs live in the receipt file; do not exceed the protocol bound.
+                value = {**value,'receipt':{k:v for k,v in value['receipt'].items() if k not in ('attempts','plan','task','protected_tests')}}
             emit({'id':request.get('id'),'ok':True,'result':value})
         except Exception as exc:
-            emit({'id':request.get('id') if isinstance(request,dict) else None,'ok':False,'error':redact(str(exc))})
+            emit({'id':request.get('id'),'ok':False,'error':redact(str(exc))})
+        finally:
+            if reserved:
+                with service.state_lock: service.active=None
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        try:
+            while True:
+                line = sys.stdin.buffer.readline(1024*1024+1)
+                if not line: return 0
+                if len(line)>1024*1024:
+                    emit({'ok':False,'error':'CodeStudio-Anfrage zu groß.'});return 1
+                request = {}
+                try:
+                    request = json.loads(line)
+                    if not isinstance(request,dict): raise ValueError('Objekt als Anfrage erforderlich.')
+                    if request.get('command') in ('cancel','status','history'): dispatch(request)
+                    elif service.active:
+                        emit({'id':request.get('id'),'ok':False,'error':'Autonomer Auftrag läuft; zuerst stoppen.'})
+                    elif request.get('command')=='autonomous':
+                        reserved=service.reserve(request)
+                        worker.submit(dispatch,request,reserved)
+                    else: worker.submit(dispatch,request)
+                except Exception as exc:
+                    emit({'id':request.get('id') if isinstance(request,dict) else None,'ok':False,'error':redact(str(exc))})
+        finally:
+            if service.active: service.active.cancel_event.set()
 
 if __name__ == '__main__': raise SystemExit(main())

@@ -452,7 +452,9 @@ class CodeStudioCore:
                 atomic_bytes(self.runs / f"{tag}.json", canonical(receipt))
                 return RunResult(task=task, plan=plan, diff=diff, final_state=final, edits=candidate, receipt=receipt, binding=binding)
             feedback = "\n".join("- " + str(x) for x in review.get("issues", []))
-        raise RuntimeError("Reviewer hat die Änderung nicht freigegeben")
+        receipt["status"] = "rejected"
+        atomic_bytes(self.runs / f"{tag}.json", canonical(receipt))
+        raise RuntimeError("Kein gültiger geprüfter Vorschlag: " + feedback[:3000])
 
     def run_tests(self):
         profiles = self.config.get("tests", [])
@@ -483,7 +485,7 @@ class CodeStudioCore:
                 return {**row, "status": "timed_out" if row["returncode"] == 124 else "failed", "results": results}
         return {"status": "passed", "returncode": 0, "output": "\n".join(r["output"] for r in results), "results": results}
 
-    def apply(self, result):
+    def claim_proposal(self, result):
         tag = result.receipt.get("tag")
         expected = self.pending.pop(tag, None)
         if expected is None:
@@ -497,6 +499,11 @@ class CodeStudioCore:
         for rel, before in expected["before"].items():
             if identity(self.workspace, rel) != before:
                 raise ValueError("Datei seit der Vorschau verändert: " + rel)
+        return expected
+
+    def apply(self, result):
+        expected = self.claim_proposal(result)
+        tag = result.receipt["tag"]
         lock = self.workspace / ".codestudio-apply.lock"
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         tx = WorkspaceTransaction(self.workspace, self.backups, tag)
