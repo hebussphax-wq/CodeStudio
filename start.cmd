@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
-python studio.py
-pause
+python codestudio.py
+if errorlevel 1 pause
