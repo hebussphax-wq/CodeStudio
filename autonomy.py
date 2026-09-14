@@ -396,9 +396,16 @@ class AutonomousRun:
         self.unchanged(); self.core.checkpoint()
         if self.latest.get('returncode')!=0:
             raise RunStopped('failed','Gesamtprüfung fehlgeschlagen; kein Abschluss.')
-        context=self.core.read_files(list(self.tx.files))
-        if self.core.truncated: raise RunStopped('blocked','Gesamtergebnis zu groß für vollständiges Review.')
-        review=self.core.chat('reviewer','Gesamtergebnis gegen ORIGINALAUFTRAG prüfen. Fehlende Funktionen zurückweisen.\n'+self.task+'\nDATEIEN:\n'+json.dumps(context,ensure_ascii=False)+'\nTESTS:\n'+self.latest.get('output',''),self.model)
+        paths=list(dict.fromkeys(list(self.tx.files)+[p for m in self.workflow['modules'] for p in m['files']+m['references']]))
+        if len(paths)>int(self.core.config.get('context_max_files',40)):
+            raise RunStopped('blocked','Zu viele Dateien für vollständiges Schlussreview.')
+        context=self.core.read_files(paths)
+        if self.core.truncated or len(context)!=len(paths) or sum(len(t.encode('utf8')) for t in context.values())>80000:
+            raise RunStopped('blocked','Gesamtergebnis zu groß oder unvollständig für vollständiges Review.')
+        self.receipt['final_context']=dict(self.core.read_identity)
+        self.unchanged()
+        source_text='\n\n'.join('FILE '+p+'\n'+t for p,t in context.items())
+        review=self.core.chat('reviewer','Review the entire result against the ORIGINAL TASK. Read-only references are context, not additional write requirements. Reject demonstrated missing functionality.\n'+self.task+'\nFILES:\n'+source_text+'\nEXECUTED TESTS:\n'+self.latest.get('output',''),self.model)
         self.receipt['final_review']=review
         self.unchanged(); self.core.checkpoint()
         if review.get('verdict')!='ok': raise RunStopped('failed','Gesamt-QC hat den Originalauftrag nicht bestätigt: '+redact(json.dumps(review)))

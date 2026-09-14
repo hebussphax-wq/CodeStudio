@@ -130,3 +130,18 @@ class ModuleTests(unittest.TestCase):
   self.assertEqual(result['status'],'succeeded');self.assertEqual(sum(role=='planner' for role,_ in calls),1)
   self.assertIn('Replace wrong initializer',calls[2][1]);self.assertIn('Replace wrong initializer',calls[3][1])
   self.assertEqual([d['reused'] for d in result['repair_diagnoses']],[False,True])
+
+ def test_final_review_includes_unchanged_dependencies(self):
+  (self.root/'levels.py').write_text('levels=[1,2,3,4]\n')
+  self.workflow['modules'][0]['references'].append('levels.py');run=self.run_new();reviews=[]
+  replies=iter([change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,OK])
+  def chat(role,prompt,model):
+   if role=='reviewer':reviews.append(prompt)
+   return next(replies)
+  with patch.object(CodeStudioCore,'chat',side_effect=chat):result=run.execute()['receipt']
+  self.assertEqual(result['status'],'succeeded');self.assertIn('FILE levels.py\nlevels=[1,2,3,4]',reviews[-1]);self.assertIn('assert a==2',reviews[-1]);self.assertIn('levels.py',result['final_context'])
+
+ def test_final_review_never_silently_drops_files_at_count_limit(self):
+  self.config['context_max_files']=2;run=self.run_new()
+  with patch.object(CodeStudioCore,'chat',side_effect=[change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK]) as chat:result=run.execute()['receipt']
+  self.assertEqual(result['status'],'blocked');self.assertTrue(result['rollback_verified']);self.assertEqual(chat.call_count,4)
