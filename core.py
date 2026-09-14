@@ -69,10 +69,11 @@ SCHEMA = {
         "type": "object",
         "properties": {
             "verdict": {"type": "string", "enum": ["ok", "reject"]},
-            "issues": {"type": "array", "items": {"type": "string"}},
-            "summary": {"type": "string"},
+            "issues": {"type": "array", "maxItems": 4, "items": {"type": "string", "maxLength": 400}},
+            "summary": {"type": "string", "maxLength": 500},
         },
         "required": ["verdict", "issues", "summary"],
+        "additionalProperties": False,
     },
 }
 
@@ -95,7 +96,9 @@ SYSTEM = {
     "reviewer": (
         "Du bist der SENIOR REVIEWER. Prüfe Diff gegen Aufgabe und Akzeptanzkriterien. "
         'Antworte NUR mit JSON: {"verdict":"ok"|"reject","issues":["..."],"summary":"..."}. '
-        "Reject nur bei echten funktionalen, Sicherheits- oder Vollständigkeitsproblemen."
+        "Prüfe ausschließlich den genannten Teilauftrag. Reject nur für einen konkreten funktionalen Fehler gegen dessen Vertrag. "
+        "Keine zusätzlichen Anforderungen an Typen, Dokumentation, Validierung oder spätere Module erfinden. "
+        "Wenn der Vertrag erfüllt ist: verdict ok, issues [], kurze summary. Höchstens vier kurze konkrete Fehler."
     ),
 }
 
@@ -178,6 +181,8 @@ class CodeStudioCore:
             "options": self.config.get("options", {}),
             "messages": [{"role": "system", "content": SYSTEM[role]}, {"role": "user", "content": user}],
         }
+        if role == 'reviewer':
+            body['options'] = {**body['options'], 'num_predict': min(body['options'].get('num_predict', 1024), 1024)}
         if 'think' in self.config:
             body['think'] = self.config['think']
         raw = ""
