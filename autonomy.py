@@ -343,7 +343,12 @@ class AutonomousRun:
                     result,test=self.proposal(task)
                     if test.get('returncode')==0:
                         context={p:result.final_state[p] for p in result.final_state}
-                        review=self.core.chat('reviewer','Prüfe ausschließlich diesen Modulvertrag. Die echten kumulativen Tests wurden bereits ausgeführt. Keine hypothetischen Testfehler erfinden.\nVERTRAG:\n'+module['contract']+'\nDATEIEN:\n'+json.dumps(context,ensure_ascii=False)+'\nECHTE TESTERGEBNISSE:\n'+test.get('output',''),self.model)
+                        source_text='\n\n'.join('DATEI '+p+'\n'+(content if content is not None else '[deleted]') for p,content in context.items())
+                        review_prompt='Prüfe ausschließlich diesen Modulvertrag. Die echten kumulativen Tests wurden bereits ausgeführt. Keine hypothetischen Testfehler erfinden. Begründe Fehler mit Dateiname und exaktem Quelltextausschnitt.\nVERTRAG:\n'+module['contract']+'\nQUELLTEXT:\n'+source_text+'\nECHTE TESTERGEBNISSE:\n'+test.get('output','')
+                        review=self.core.chat('reviewer',review_prompt,self.model)
+                        if review.get('verdict')!='ok':
+                            self.receipt['attempts'][-1]['initial_module_review']=review
+                            review=self.core.chat('reviewer',review_prompt+'\nBESTRITTENE ABLEHNUNG:\n'+json.dumps(review,ensure_ascii=False)+'\nÜberprüfe jede obige Behauptung nochmals direkt am vollständigen Quelltext. Zitiere bei bestätigten Fehlern den konkreten Ausdruck und verletzten Vertrag. Falls die Ablehnung den tatsächlichen Quelltext falsch gelesen hat, ziehe sie ausdrücklich zurück: verdict ok. Bestehende echte Fehler bleiben reject. Test-Erfolg allein ist kein Freigabegrund.',self.model)
                         self.receipt['attempts'][-1]['module_review']=review
                         self.unchanged();self.core.checkpoint()
                         if review.get('verdict')!='ok': raise ProposalRejected(redact(json.dumps(review)))

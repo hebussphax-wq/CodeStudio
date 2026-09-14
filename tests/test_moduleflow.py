@@ -72,3 +72,21 @@ class ModuleTests(unittest.TestCase):
   def chat(role,prompt,model):prompts.append(prompt);return next(replies)
   with patch.object(CodeStudioCore,'chat',side_effect=chat):result=run.execute()['receipt']
   self.assertEqual(result['status'],'succeeded');self.assertIn('a must equal 2',prompts[2]);self.assertIn('Keine effektive',prompts[2])
+
+ def test_disputed_review_is_checked_against_readable_source(self):
+  run=self.run_new();prompts=[]
+  false={'verdict':'reject','issues':['a is 0'],'summary':'incorrect reading'}
+  replies=iter([change('a=2\nb=0\n'),false,OK,change('a=2\nb=3\n'),OK,OK])
+  def chat(role,prompt,model):prompts.append(prompt);return next(replies)
+  with patch.object(CodeStudioCore,'chat',side_effect=chat):result=run.execute()['receipt']
+  self.assertEqual(result['status'],'succeeded')
+  self.assertIn('DATEI calc.py\na=2\nb=0',prompts[2])
+  self.assertIn('BESTRITTENE ABLEHNUNG',prompts[2])
+  self.assertEqual(result['attempts'][0]['initial_module_review'],false)
+  self.assertEqual(result['attempts'][0]['module_review'],OK)
+ def test_confirmed_review_rejection_still_rolls_back(self):
+  run=self.run_new(0)
+  reject={'verdict':'reject','issues':['specific contract error'],'summary':'reject'}
+  with patch.object(CodeStudioCore,'chat',side_effect=[change('a=2\nb=0\n'),reject,reject]):result=run.execute()['receipt']
+  self.assertEqual(result['status'],'budget_exhausted')
+  self.assertTrue(result['rollback_verified']);self.assertEqual(result['steps'],[])
