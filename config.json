@@ -1,0 +1,54 @@
+{
+  "ollama_url": "http://localhost:11434",
+  "workspace": "./workspace",
+  "timeout_sec": 900,
+  "max_review_rounds": 2,
+  "max_question_rounds": 2,
+  "context_max_files": 40,
+  "context_max_bytes_per_file": 16000,
+  "max_changed_files": 12,
+  "max_generated_bytes_per_file": 500000,
+  "test_command": "",
+  "test_output_max_chars": 12000,
+  "git_checkpoint": true,
+  "git_branch_per_task": false,
+  "max_repair_rounds": 1,
+  "rollback_on_test_failure": true,
+  "scout_top_n": 15,
+  "scout_max_file_bytes": 200000,
+  "structured_output": true,
+  "chars_per_token": 3.5,
+  "options": {
+    "temperature": 0.2,
+    "num_ctx": 16384
+  },
+  "profiles": {
+    "8": {
+      "model": "qwen2.5-coder:7b",
+      "num_ctx": 8192
+    },
+    "12": {
+      "model": "qwen2.5-coder:14b",
+      "num_ctx": 12288
+    },
+    "16": {
+      "model": "gpt-oss:20b",
+      "num_ctx": 16384
+    },
+    "24": {
+      "model": "qwen3-coder:30b",
+      "num_ctx": 16384
+    }
+  },
+  "roles": {
+    "planer": {
+      "model": "gpt-oss:20b"
+    },
+    "coder": {
+      "model": "gpt-oss:20b"
+    },
+    "reviewer": {
+      "model": "gpt-oss:20b"
+    }
+  }
+}
