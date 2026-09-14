@@ -41,3 +41,20 @@ class HostTests(unittest.TestCase):
             file.write_text(json.dumps(base));transport=HostTransport(str(file),folder)
             file.write_text(json.dumps({**base,'token':'b'*64}))
             with self.assertRaisesRegex(ValueError,'verändert'):transport('models',{})
+
+    def test_host_module_prompt_matches_simple_schema(self):
+        with tempfile.TemporaryDirectory() as folder:
+            calls=[]
+            def transport(command,payload):calls.append(payload);return {'edits':[],'notes':''}
+            core=CodeStudioCore(pathlib.Path(folder),{'workspace':folder},transport=transport);core.module_mode=True
+            core.chat('coder','bounded module','bound')
+            self.assertIn('exactly path, op (create/write/delete), content',calls[0]['system'])
+            self.assertNotIn('replace',calls[0]['schema']['properties']['edits']['items']['properties']['op']['enum'])
+
+    def test_module_review_requests_facts_before_verdict(self):
+        with tempfile.TemporaryDirectory() as folder:
+            calls=[]
+            core=CodeStudioCore(pathlib.Path(folder),{'workspace':folder},transport=lambda _,p:(calls.append(p) or {'verdict':'ok','issues':[],'summary':'ok'}));core.module_mode=True
+            core.chat('reviewer','contract and sources','bound')
+            self.assertIn('First compute what the source actually does',calls[0]['system'])
+            self.assertEqual(next(iter(calls[0]['schema']['properties'])),'observations')

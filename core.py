@@ -169,11 +169,15 @@ class CodeStudioCore:
         if role == 'coder' and getattr(self,'module_mode',False):
             return {'type':'object','properties':{'edits':{'type':'array','minItems':1,'maxItems':4,
                 'items':{'type':'object','properties':{'path':{'type':'string'},'op':{'type':'string','enum':['create','write','delete']},'content':{'type':'string'}},'required':['path','op','content'],'additionalProperties':False}},'notes':{'type':'string','maxLength':300}},'required':['edits','notes'],'additionalProperties':False}
+        if role == 'reviewer' and getattr(self,'module_mode',False):
+            return {'type':'object','properties':{'observations':{'type':'string','maxLength':1600},'issues':SCHEMA['reviewer']['properties']['issues'],'verdict':SCHEMA['reviewer']['properties']['verdict'],'summary':SCHEMA['reviewer']['properties']['summary']},'required':['observations','issues','verdict','summary'],'additionalProperties':False}
         return SCHEMA[role]
 
     def chat(self, role: str, user: str, model: str) -> dict:
+        effective_system = "Implement ONLY the bounded module contract. Return JSON edits with exactly path, op (create/write/delete), content (complete source). No old_text or new_text, no duplicate code, no shell commands. Keep implementation concise and complete." if role == 'coder' and getattr(self,'module_mode',False) else SYSTEM[role]
+        if role == 'reviewer' and getattr(self,'module_mode',False): effective_system = "You are a software reviewer. First compute what the source actually does, including functions called by factories. Then compare this behavior with the explicit contract. Return JSON in this order: observations (short factual explanation), issues (only demonstrated contract violations, empty array when none), verdict (ok or reject), summary. A passing test alone does not prove correctness. Never invent a missing value when the code computes it. Approve when the contract is fulfilled."
         if self.transport is not None:
-            result = self.transport('chat', {'role': role, 'model': model, 'system': SYSTEM[role],
+            result = self.transport('chat', {'role': role, 'model': model, 'system': effective_system,
                 'messages': [{'role': 'user', 'content': user}], 'schema': self.output_schema(role)})
             if not isinstance(result, dict):
                 raise ValueError('Host lieferte kein strukturiertes Modellobjekt.')
@@ -185,14 +189,12 @@ class CodeStudioCore:
             "format": fmt,
             "keep_alive": self.config.get("keep_alive", "10m"),
             "options": self.config.get("options", {}),
-            "messages": [{"role": "system", "content": SYSTEM[role]}, {"role": "user", "content": user}],
+            "messages": [{"role": "system", "content": effective_system}, {"role": "user", "content": user}],
         }
         if role == 'reviewer':
             body['options'] = {**body['options'], 'num_predict': min(body['options'].get('num_predict', 1024), 1024)}
         if 'think' in self.config:
             body['think'] = self.config['think']
-        if role == 'coder' and getattr(self,'module_mode',False):
-            body['messages'][0]['content']='Implement ONLY the bounded module contract. Return JSON edits with exactly path, op (create/write/delete), content (complete source). No old_text or new_text, no duplicate code, no shell commands. Keep implementation concise and complete.'
         raw = ""
         for attempt in (1, 2):
             response = self.ollama_request("/api/chat", body)

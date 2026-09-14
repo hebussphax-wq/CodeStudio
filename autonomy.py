@@ -12,7 +12,7 @@ from core import CodeStudioCore, truncate, SCHEMA
 from workflow import normalize_job, job_result
 from moduleflow import normalize_workflow
 from processrunner import run_command, ProcessTreeUncertain
-from safety import WorkspaceTransaction, atomic_bytes, canonical, digest, identity, relative, redact, ensure_source_text
+from safety import WorkspaceTransaction, atomic_bytes, canonical, digest, identity, relative, redact, ensure_source_text, safe_path
 
 class RunStopped(RuntimeError):
     def __init__(self, status, message):
@@ -335,6 +335,7 @@ class AutonomousRun:
             self.receipt['active_module']=module['id']
             self.save()
             feedback=''
+            review_failure=''
             for attempt in range(self.limits['repairs']+1):
                 self.core.log('Modul '+module['id']+' Versuch '+str(attempt+1))
                 task=module['contract']+'\nNur diese Dateien ändern: '+json.dumps(module['files'])
@@ -342,7 +343,15 @@ class AutonomousRun:
                 try:
                     result,test=self.proposal(task)
                     if test.get('returncode')==0:
-                        context={p:result.final_state[p] for p in result.final_state}
+                        self.unchanged()
+                        context={}; review_bytes=0
+                        for p in dict.fromkeys(module['files']+module['references']):
+                            source=safe_path(self.core.workspace,p)
+                            if not source.exists(): context[p]='[deleted or absent]'; continue
+                            raw=source.read_bytes(); review_bytes+=len(raw)
+                            if len(raw)>20000 or review_bytes>80000: raise RunStopped('blocked','Modul-QC-Kontext zu groß: '+p)
+                            context[p]=ensure_source_text(raw.decode('utf8'))
+                        self.unchanged()
                         source_text='\n\n'.join('DATEI '+p+'\n'+(content if content is not None else '[deleted]') for p,content in context.items())
                         review_prompt='Prüfe ausschließlich diesen Modulvertrag. Die echten kumulativen Tests wurden bereits ausgeführt. Keine hypothetischen Testfehler erfinden. Begründe Fehler mit Dateiname und exaktem Quelltextausschnitt.\nVERTRAG:\n'+module['contract']+'\nQUELLTEXT:\n'+source_text+'\nECHTE TESTERGEBNISSE:\n'+test.get('output','')
                         review=self.core.chat('reviewer',review_prompt,self.model)
@@ -351,7 +360,9 @@ class AutonomousRun:
                             review=self.core.chat('reviewer',review_prompt+'\nBESTRITTENE ABLEHNUNG:\n'+json.dumps(review,ensure_ascii=False)+'\nÜberprüfe jede obige Behauptung nochmals direkt am vollständigen Quelltext. Zitiere bei bestätigten Fehlern den konkreten Ausdruck und verletzten Vertrag. Falls die Ablehnung den tatsächlichen Quelltext falsch gelesen hat, ziehe sie ausdrücklich zurück: verdict ok. Bestehende echte Fehler bleiben reject. Test-Erfolg allein ist kein Freigabegrund.',self.model)
                         self.receipt['attempts'][-1]['module_review']=review
                         self.unchanged();self.core.checkpoint()
-                        if review.get('verdict')!='ok': raise ProposalRejected(redact(json.dumps(review)))
+                        if review.get('verdict')!='ok':
+                            review_failure=redact(json.dumps(review))
+                            raise ProposalRejected(review_failure)
                         self.receipt['steps'].append({'number':number,'id':module['id'],
                             'status':'verified','proposal_id':result.receipt['tag'],
                             'tests':checked[:], 'after':{p:self.expected[p] for p in module['files'] if p in self.expected}})
@@ -359,7 +370,7 @@ class AutonomousRun:
                     feedback=test.get('output','Test fehlgeschlagen')
                 except ProposalRejected as exc:
                     current_failure=self.latest.get('output','') if self.latest.get('returncode') not in (None,0) else ''
-                    feedback=truncate(current_failure,9000)+'\nVORSCHLAGFEHLER: '+str(exc)
+                    feedback=truncate(current_failure or review_failure,9000)+'\nVORSCHLAGFEHLER: '+str(exc)
                 self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
                 self.save()
                 if attempt==self.limits['repairs']:
