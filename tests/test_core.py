@@ -23,7 +23,7 @@ class CoreTests(unittest.TestCase):
 
     def tearDown(self): shutil.rmtree(self.tmp, ignore_errors=True)
     def write(self, rel, text):
-        p=self.ws/rel; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(text,encoding="utf-8")
+        p=self.ws/rel; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(text.encode("utf-8"))
 
     def test_path_traversal_blocked(self):
         with self.assertRaises(ValueError): safe_path(self.ws,"../evil.py",write=True)

@@ -1,4 +1,3 @@
 @echo off
-cd /d "%~dp0"
-python codestudio.py
+py -3 "%~dp0codestudio.py"
 if errorlevel 1 pause

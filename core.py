@@ -12,6 +12,11 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
+import copy
+from processrunner import run_command, ProcessTreeUncertain
+from safety import (safe_path, WorkspaceTransaction, identity, digest, canonical,
+                    read_text, ensure_source_text, atomic_bytes, relative, redact)
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -99,22 +104,6 @@ def truncate(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n] + "\n...[gekürzt]"
 
 
-def safe_path(workspace: pathlib.Path, rel: str, write: bool = False) -> pathlib.Path:
-    if not isinstance(rel, str) or not rel.strip():
-        raise ValueError("Leerer Pfad")
-    relp = pathlib.Path(rel.replace("\\", "/"))
-    if relp.is_absolute() or any(p in {"..", ""} for p in relp.parts):
-        raise ValueError(f"Unsicherer Pfad: {rel}")
-    if write and any(p.casefold() in _SKIP_FOLD for p in relp.parts):
-        raise ValueError(f"Geschütztes Verzeichnis: {rel}")
-    p = (workspace / relp).resolve()
-    try:
-        p.relative_to(workspace.resolve())
-    except ValueError as exc:
-        raise ValueError(f"Pfad ausserhalb Workspace: {rel}") from exc
-    return p
-
-
 @dataclass
 class RunResult:
     task: str
@@ -123,88 +112,36 @@ class RunResult:
     final_state: dict[str, str | None] = field(default_factory=dict)
     edits: list[dict] = field(default_factory=list)
     receipt: dict = field(default_factory=dict)
-
-
-class WorkspaceTransaction:
-    def __init__(self, workspace: pathlib.Path, backup_root: pathlib.Path, tag: str):
-        self.workspace = workspace
-        self.root = backup_root / tag
-        self.files: dict[str, dict] = {}
-
-    def touch(self, rel: str):
-        if rel in self.files:
-            return
-        p = safe_path(self.workspace, rel, write=True)
-        existed = p.is_file()
-        entry = {"path": rel, "existed_before": existed}
-        if existed:
-            data = p.read_bytes()
-            entry["sha256_before"] = hashlib.sha256(data).hexdigest()
-            dst = self.root / "files" / pathlib.Path(rel)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, dst)
-        self.files[rel] = entry
-        self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / "manifest.json").write_text(
-            json.dumps({"files": list(self.files.values())}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def write(self, rel: str, content: str):
-        self.touch(rel)
-        p = safe_path(self.workspace, rel, write=True)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=".codestudio-", suffix=".tmp", dir=str(p.parent))
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(content.encode("utf-8"))
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, p)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-
-    def delete(self, rel: str):
-        self.touch(rel)
-        p = safe_path(self.workspace, rel, write=True)
-        if p.exists():
-            if not p.is_file():
-                raise ValueError(f"Kein Datei-Ziel: {rel}")
-            p.unlink()
-
-    def rollback(self) -> list[str]:
-        restored = []
-        for rel, entry in self.files.items():
-            dst = safe_path(self.workspace, rel, write=True)
-            if entry["existed_before"]:
-                src = self.root / "files" / pathlib.Path(rel)
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-            elif dst.is_file():
-                dst.unlink()
-            restored.append(rel)
-        return restored
+    binding: dict = field(default_factory=dict)
 
 
 class CodeStudioCore:
-    def __init__(self, root: pathlib.Path, config: dict, log: Callable[[str], None] | None = None):
+    def __init__(self, root: pathlib.Path, config: dict, log: Callable[[str], None] | None = None, transport=None):
         self.root = root
-        self.config = config
+        self.config = copy.deepcopy(config)
         self.log = log or (lambda _: None)
+        self.transport = transport
         w = pathlib.Path(config["workspace"])
         self.workspace = (root / w).resolve() if not w.is_absolute() else w.resolve()
-        self.runs = root / "runs"
-        self.backups = root / "backups"
+        state_root = pathlib.Path(config.get("state_dir", root))
+        self.runs = state_root / "runs"
+        self.backups = state_root / "backups"
+        self.read_identity = {}
+        self.pending = {}
+        self._busy = False
         self.truncated: set[str] = set()
         self.fully_read: set[str] = set()
 
     def set_workspace(self, path: str):
-        self.workspace = pathlib.Path(path).resolve()
-        self.workspace.mkdir(parents=True, exist_ok=True)
+        if self._busy:
+            raise RuntimeError("Workspace ist während einer Analyse gesperrt")
+        target = pathlib.Path(path).resolve(strict=True)
+        if not target.is_dir():
+            raise ValueError("Workspace muss ein vorhandener Ordner sein")
+        self.workspace = target
+        self.fully_read.clear()
+        self.read_identity.clear()
+        self.pending.clear()
 
     def ollama_request(self, path: str, body: dict | None = None, timeout: int | None = None) -> dict:
         url = self.config["ollama_url"].rstrip("/") + path
@@ -220,10 +157,18 @@ class CodeStudioCore:
             raise RuntimeError(f"Ollama nicht erreichbar: {url}") from exc
 
     def installed_models(self) -> list[str]:
+        if self.transport is not None:
+            return self.transport('models', {})['models']
         data = self.ollama_request("/api/tags", timeout=10)
         return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
 
     def chat(self, role: str, user: str, model: str) -> dict:
+        if self.transport is not None:
+            result = self.transport('chat', {'role': role, 'model': model, 'system': SYSTEM[role],
+                'messages': [{'role': 'user', 'content': user}], 'schema': SCHEMA[role]})
+            if not isinstance(result, dict):
+                raise ValueError('Host lieferte kein strukturiertes Modellobjekt.')
+            return result
         fmt: Any = SCHEMA[role] if self.config.get("structured_output", True) else "json"
         body = {
             "model": model,
@@ -251,12 +196,14 @@ class CodeStudioCore:
         out = []
         hard = max(200, int(self.config.get("context_max_files", 40)) * 8)
         for current, dirs, files in os.walk(self.workspace):
-            dirs[:] = sorted(d for d in dirs if d.casefold() not in _SKIP_FOLD)
+            dirs[:] = sorted(d for d in dirs if d.casefold() not in _SKIP_FOLD and not (pathlib.Path(current) / d).is_symlink() and not (hasattr(pathlib.Path(current) / d, "is_junction") and (pathlib.Path(current) / d).is_junction()))
             cp = pathlib.Path(current)
             for name in sorted(files):
                 p = cp / name
                 try:
-                    out.append(p.relative_to(self.workspace).as_posix())
+                    rel = p.relative_to(self.workspace).as_posix()
+                    safe_path(self.workspace, rel)
+                    out.append(rel)
                 except ValueError:
                     pass
                 if len(out) >= hard:
@@ -290,7 +237,7 @@ class CodeStudioCore:
                 raw = p.read_bytes()
                 if b"\0" in raw[:4096]:
                     continue
-                txt = raw.decode("utf-8", errors="replace")
+                txt = ensure_source_text(raw.decode("utf-8"))
             except (OSError, ValueError):
                 continue
             low = txt.lower()
@@ -311,6 +258,7 @@ class CodeStudioCore:
     def read_files(self, paths: list[str]) -> dict[str, str]:
         self.truncated.clear()
         self.fully_read.clear()
+        self.read_identity.clear()
         result = {}
         limit = int(self.config.get("context_max_bytes_per_file", 20000))
         max_files = int(self.config.get("context_max_files", 40))
@@ -319,11 +267,13 @@ class CodeStudioCore:
                 p = safe_path(self.workspace, rel)
             except ValueError:
                 continue
+            self.read_identity[rel] = identity(self.workspace, rel)
             if p.is_file():
                 raw = p.read_bytes()
                 clipped = len(raw) > limit
                 use = raw[:limit] if clipped else raw
-                txt = use.decode("utf-8", errors="replace")
+                ensure_source_text(read_text(p))
+                txt = use.decode("utf-8", errors="ignore")
                 if clipped:
                     self.truncated.add(rel)
                     txt += "\n…[gekürzt – whole-file write verboten]"
@@ -353,13 +303,16 @@ class CodeStudioCore:
 
     def current_text(self, rel: str) -> str:
         p = safe_path(self.workspace, rel)
-        return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
+        return ensure_source_text(read_text(p)) if p.is_file() else ""
 
     def validate_edits(self, edits: list[dict], allowed_files: set[str]) -> tuple[dict[str, str | None], list[str]]:
         state: dict[str, str | None] = {}
         issues = []
         for e in edits:
             rel, op = e["path"], e["op"]
+            if rel in self.read_identity and identity(self.workspace, rel) != self.read_identity[rel]:
+                issues.append(f"{rel}: Datei seit dem Lesen verändert")
+                continue
             if self.config.get("enforce_plan_scope", True) and rel not in allowed_files:
                 issues.append(f"{rel}: nicht im Plan-Scope")
                 continue
@@ -390,7 +343,7 @@ class CodeStudioCore:
             elif op == "write":
                 if cur is None:
                     issues.append(f"{rel}: write auf neue Datei – create verwenden")
-                elif rel not in self.fully_read:
+                elif rel not in self.fully_read or rel not in self.read_identity:
                     issues.append(f"{rel}: whole-file write nur nach vollständigem Lesen erlaubt")
                 elif not e["content"]:
                     issues.append(f"{rel}: leerer Dateiinhalt")
@@ -403,6 +356,11 @@ class CodeStudioCore:
                     state[rel] = None
         final = {}
         for rel, new in state.items():
+            if new is not None and len(new.encode("utf-8")) > int(self.config.get("max_generated_bytes_per_file", 750000)):
+                issues.append(f"{rel}: Generierter Inhalt zu groß")
+                continue
+            if new is not None:
+                ensure_source_text(new)
             old = self.current_text(rel) if safe_path(self.workspace, rel).is_file() else None
             if new != old:
                 final[rel] = new
@@ -410,18 +368,36 @@ class CodeStudioCore:
             issues.append("Keine effektive Änderung")
         return final, issues
 
-    def diff_for_state(self, final: dict[str, str | None]) -> str:
+    def diff_for_state(self, final):
         chunks = []
-        for rel, new in final.items():
+        for rel, new in sorted(final.items()):
             old = self.current_text(rel)
-            diff = difflib.unified_diff(old.splitlines(), ("" if new is None else new).splitlines(), fromfile=f"a/{rel}", tofile=f"b/{rel}", lineterm="")
-            txt = "\n".join(diff)
-            if txt:
-                chunks.append(txt)
-        return "\n\n".join(chunks) if chunks else "(Keine Textänderungen.)"
+            exists = safe_path(self.workspace, rel).exists()
+            lines = difflib.unified_diff(old.splitlines(keepends=True),
+                    ("" if new is None else new).splitlines(keepends=True),
+                    fromfile=f"a/{rel}" if exists else "/dev/null",
+                    tofile=f"b/{rel}" if new is not None else "/dev/null")
+            for line in lines:
+                if line.endswith("\n"):
+                    chunks.append(line)
+                else:
+                    chunks.append(line + "\n\\ No newline at end of file\n")
+        return "".join(chunks)
 
-    def analyze(self, task: str, model: str) -> RunResult:
-        tag = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    def analyze(self, task, model):
+        if self._busy:
+            raise RuntimeError("Eine Analyse läuft bereits")
+        self._busy = True
+        try:
+            return self._analyze(task, model)
+        finally:
+            self._busy = False
+
+    def _analyze(self, task: str, model: str) -> RunResult:
+        if not task.strip() or not model.strip():
+            raise ValueError("Aufgabe und installiertes Modell sind erforderlich")
+        tag = uuid.uuid4().hex
+        ensure_source_text(task)
         receipt = {"schema_version": 2, "tag": tag, "task": task, "workspace": str(self.workspace), "model": model, "rounds": []}
         tree = self.file_tree()
         candidates = self.scout(task, tree)
@@ -433,7 +409,11 @@ class CodeStudioCore:
         plan = self.chat("planner", planner_prompt, model)
         if plan.get("questions"):
             raise RuntimeError("Planer benötigt Rückfrage: " + " | ".join(plan["questions"]))
-        files = [str(x) for x in plan.get("files", [])]
+        if not isinstance(plan.get("files"), list) or not isinstance(plan.get("plan"), list):
+            raise ValueError("Plan hat kein gültiges Dateiverzeichnis")
+        files = [relative(x) for x in plan["files"]]
+        if len({x.casefold() for x in files}) != len(files):
+            raise ValueError("Mehrdeutige Planpfade")
         ctx = self.read_files(files)
         allowed = set(files)
         receipt.update({"plan": plan, "scout": candidates, "context_files": list(ctx)})
@@ -446,6 +426,12 @@ class CodeStudioCore:
                 prompt += "\n\nBEANSTANDUNGEN:\n" + feedback
             code = self.chat("coder", prompt, model)
             candidate = self.normalize_edits(code.get("edits", []))
+            for edit in candidate:
+                if edit["path"] not in self.read_identity:
+                    # Unread new files may be created; existing files require task context.
+                    if identity(self.workspace, edit["path"]) is not None:
+                        raise ValueError("Datei nicht im gelesenen Kontext: " + edit["path"])
+                    self.read_identity[edit["path"]] = None
             final, issues = self.validate_edits(candidate, allowed)
             if issues:
                 feedback = "\n".join("- " + x for x in issues)
@@ -456,58 +442,110 @@ class CodeStudioCore:
             review = self.chat("reviewer", f"AUFGABE:\n{task}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nUNIFIED DIFF:\n{diff}", model)
             receipt["rounds"].append({"round": rnd, "review": review})
             if review.get("verdict") == "ok":
-                receipt["status"] = "ready"
-                return RunResult(task=task, plan=plan, diff=diff, final_state=final, edits=candidate, receipt=receipt)
+                receipt["status"] = "proposed"
+                binding = {"workspace": str(self.workspace), "before": dict(self.read_identity),
+                           "final_sha256": digest(canonical(final)), "tests_sha256": digest(canonical(self.config.get("tests", []))),
+                           "diff_sha256": digest(diff.encode("utf-8"))}
+                self.pending[tag] = copy.deepcopy(binding)
+                receipt["binding"] = binding
+                self.runs.mkdir(parents=True, exist_ok=True)
+                atomic_bytes(self.runs / f"{tag}.json", canonical(receipt))
+                return RunResult(task=task, plan=plan, diff=diff, final_state=final, edits=candidate, receipt=receipt, binding=binding)
             feedback = "\n".join("- " + str(x) for x in review.get("issues", []))
         raise RuntimeError("Reviewer hat die Änderung nicht freigegeben")
 
-    def run_tests(self) -> dict | None:
+    def run_tests(self):
         profiles = self.config.get("tests", [])
         if not profiles:
-            return None
-        max_chars = int(self.config.get("test_output_max_chars", 12000))
+            return {"status": "not_configured", "returncode": None, "output": "", "results": []}
+        results = []
         for t in profiles:
-            argv = t.get("argv")
-            if not isinstance(argv, list) or not argv:
-                continue
+            if not isinstance(t, dict) or not isinstance(t.get("argv"), list) or not t["argv"] or not all(isinstance(a, str) and a for a in t["argv"]):
+                return {"status": "invalid_configuration", "returncode": 126, "output": "Testprofil benötigt eine nichtleere Argumentliste", "results": results}
+            argv = t["argv"]
+            if pathlib.Path(argv[0]).suffix.lower() in {".cmd", ".bat"}:
+                return {"status": "invalid_configuration", "returncode": 126, "output": "Batch-Dateien sind keine direkten Testprogramme", "results": results}
             name = str(t.get("name") or argv[0])
-            self.log(f"Test: {name}")
+            self.log("Test: " + name)
             try:
-                p = subprocess.run([str(x) for x in argv], cwd=self.workspace, shell=False, capture_output=True, text=True, timeout=int(t.get("timeout_sec", 600)), check=False)
-                output = (p.stdout or "") + (p.stderr or "")
-                if p.returncode != 0:
-                    return {"name": name, "returncode": p.returncode, "output": truncate(output, max_chars)}
-            except FileNotFoundError as exc:
-                return {"name": name, "returncode": 127, "output": str(exc)}
+                timeout = int(t.get("timeout_sec", 300))
+                if timeout < 1 or timeout > 3600:
+                    raise ValueError("Test-Timeout außerhalb 1–3600 Sekunden")
+                outcome = run_command(argv, self.workspace, timeout)
+                row = {**outcome, "name": name,
+                       "output": truncate(redact(outcome['output']), int(self.config.get("test_output_max_chars", 12000)))}
             except subprocess.TimeoutExpired:
-                return {"name": name, "returncode": 124, "output": "Timeout"}
-        return {"name": "all", "returncode": 0, "output": ""}
+                row = {"name": name, "returncode": 124, "output": "Timeout"}
+            except (OSError, ValueError) as exc:
+                row = {"name": name, "returncode": 126, "output": redact(str(exc))}
+            results.append(row)
+            if row["returncode"] != 0:
+                return {**row, "status": "timed_out" if row["returncode"] == 124 else "failed", "results": results}
+        return {"status": "passed", "returncode": 0, "output": "\n".join(r["output"] for r in results), "results": results}
 
-    def apply(self, result: RunResult) -> dict:
-        tag = result.receipt["tag"]
+    def apply(self, result):
+        tag = result.receipt.get("tag")
+        expected = self.pending.pop(tag, None)
+        if expected is None:
+            raise ValueError("Vorschlag fehlt, ist verworfen oder bereits verbraucht")
+        if expected != result.binding or expected["workspace"] != str(self.workspace):
+            raise ValueError("Vorschlag gehört zu einem anderen Workspace")
+        if expected["final_sha256"] != digest(canonical(result.final_state)) or expected["diff_sha256"] != digest(result.diff.encode("utf-8")):
+            raise ValueError("Vorschlag wurde nach der Prüfung verändert")
+        if expected["tests_sha256"] != digest(canonical(self.config.get("tests", []))):
+            raise ValueError("Testkonfiguration verändert; neu analysieren")
+        for rel, before in expected["before"].items():
+            if identity(self.workspace, rel) != before:
+                raise ValueError("Datei seit der Vorschau verändert: " + rel)
+        lock = self.workspace / ".codestudio-apply.lock"
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         tx = WorkspaceTransaction(self.workspace, self.backups, tag)
+        receipt = copy.deepcopy(result.receipt)
         try:
-            written = []
+            os.write(fd, tag.encode("ascii"))
             for rel, new in result.final_state.items():
+                if identity(self.workspace, rel) != expected["before"][rel]:
+                    raise ValueError("Datei während Anwendung verändert: " + rel)
                 if new is None:
                     tx.delete(rel)
                 else:
                     tx.write(rel, new)
-                written.append(rel)
-            result.receipt["written"] = written
+            receipt["written"] = list(result.final_state)
             test = self.run_tests()
-            result.receipt["test"] = test
-            if test and test["returncode"] != 0:
-                result.receipt["rollback"] = tx.rollback()
-                result.receipt["status"] = "rolled-back"
+            receipt["test"] = test
+            if test["returncode"] not in (None, 0):
+                receipt["rollback"] = tx.rollback()
+                receipt["status"] = "rolled-back"
             else:
-                result.receipt["status"] = "applied"
-            return result.receipt
-        except Exception:
-            if tx.files:
-                result.receipt["rollback"] = tx.rollback()
-            result.receipt["status"] = "error-rolled-back"
+                for rel, new in result.final_state.items():
+                    if identity(self.workspace, rel) != (digest(new.encode("utf-8")) if new is not None else None):
+                        raise RuntimeError("Datei nach Tests verändert: " + rel)
+                receipt["status"] = "applied" if test["returncode"] == 0 else "applied-untested"
+            receipt["after"] = {p: identity(self.workspace, p) for p in result.final_state}
+            self.runs.mkdir(parents=True, exist_ok=True)
+            atomic_bytes(self.runs / f"{tag}.json", canonical(receipt))
+            return receipt
+        except Exception as exc:
+            receipt["error"] = redact(str(exc))
+            if isinstance(exc, ProcessTreeUncertain):
+                receipt['status'] = 'recovery-required-process-tree'
+            else:
+                try:
+                    receipt["rollback"] = tx.rollback()
+                    receipt["status"] = "error-rolled-back"
+                except Exception as rollback_error:
+                    receipt["status"] = "rollback-conflict"
+                    receipt["rollback_error"] = redact(str(rollback_error))
+            try:
+                atomic_bytes(self.runs / f"{tag}.json", canonical(receipt))
+            except OSError:
+                pass  # Independent recovery receipt is always attempted below.
             raise
         finally:
-            self.runs.mkdir(parents=True, exist_ok=True)
-            (self.runs / f"{tag}.json").write_text(json.dumps(result.receipt, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                # Keep a recovery receipt next to the verified preimage even if runs/ failed.
+                atomic_bytes(tx.root / 'effect-receipt.json', canonical(receipt))
+            finally:
+                os.close(fd)
+                if receipt.get('status') != 'recovery-required-process-tree':
+                    lock.unlink()

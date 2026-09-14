@@ -1,71 +1,105 @@
-# CodeStudio – lokales KI-Coding-Studio für Windows + Ollama
+# CodeStudio
 
-Fertige lokale Windows-App mit **Workspace-Auswahl, Ollama-Modellwahl, Planer, Coder, Reviewer, Diff-Vorschau, Freigabe, Tests und Rollback**.
+Lokales Coding-Studio in **Visual Studio Code**, mit Scout, Planer, Coder,
+Reviewer, nativem Diffeditor, Freigabe, Projekttests und Rückrollen bei Fehlern.
 
 ## Start
 
-1. Ollama und Python 3.11+ installieren.
-2. PowerShell im CodeStudio-Ordner:
+Voraussetzungen: Visual Studio Code, Ollama und ein installiertes Coding-Modell.
+Im vollständigen VS-Code-Windows-Paket startet `CodeStudio.exe` einen eigenen
+VS-Code-Arbeitsbereich mit der CodeStudio-Erweiterung und enthaltener Python-Laufzeit.
+Das frühere Tkinter-Paket enthält diese Erweiterung noch nicht.
+Im Quellpaket startet `python codestudio.py [Projektordner]` (Python 3.11+)
+VS Code mit der Quellerweiterung; alternativ `start.cmd` öffnen.
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\setup.ps1
-```
+1. Lokalen Projektordner in VS Code öffnen und die CodeStudio-Seitenleiste wählen.
+2. Unter „Modell“ ein installiertes Ollama-Modell und unter „Kontext“ die passende Größe auswählen.
+3. Unter „Projekttests einstellen“ die Argumentliste des eigenen Testprogramms festlegen,
+   z. B. `["python", "-m", "unittest", "discover", "-v"]`.
+4. „Aufgabe planen und Diff erzeugen“ wählen und Aufgabe mit Akzeptanzkriterien eingeben.
+5. Vorschlag prüfen, dann „Geprüften Diff anwenden“ bestätigen.
 
-3. Ollama einmal komplett neu starten.
-4. `start.cmd` doppelklicken.
+Bei fehlgeschlagenen Tests wird bytegenau zurückgerollt. Der Testfehler steht
+unter „Ablauf und Belege“ und kann einer neuen Aufgabe beigefügt werden.
+Auch der nächste Vorschlag benötigt eine Diff-Freigabe. Ohne konfigurierte Projekttests wird
+das Ergebnis ausdrücklich als ungeprüft angezeigt.
 
-Alternativ:
+Das eigenständige VS-Code-Profil liegt unter `%LOCALAPPDATA%/CodeStudio/VSCode`.
+Projekteinstellungen liegen in den VS-Code-Arbeitsbereichseinstellungen;
+Laufbelege und Sicherungen im globalen Erweiterungsspeicher dieses Profils,
+getrennt nach Projekt. „Ablauf und Belege“ zeigt den konkreten Belegpfad.
+Ungespeicherte Editoränderungen blockieren Generierung und Anwendung.
+`python codestudio.py --doctor` prüft die Ollama-Verbindung.
+Die frühere Tkinter-Oberfläche bleibt ausschließlich unter `--legacy-gui` verfügbar.
 
-```powershell
-python codestudio.py
-```
+## Gemeinsamer Kern und TobyKi
 
-## Bedienung
+`core.py`, `safety.py` und `processrunner.py` bilden den gemeinsamen Kern.
+`vscode/` enthält die VS-Code-Erweiterung, `service.py` ihren lokalen Dienst,
+`codestudio.py` den Startpunkt. `bridge.py` erzeugt ausschließlich
+Vorschläge für Host-Anwendungen. Das Eingabeschema ist `codestudio.propose.v1`,
+die Antwort `codestudio.proposal.v1`; Transport: JSON über stdin/stdout.
 
-1. Workspace wählen.
-2. Ollama-Modell auswählen.
-3. Aufgabe eingeben.
-4. **Analysieren** drücken.
-5. Plan + Diff prüfen.
-6. **Änderungen anwenden** drücken.
-7. Konfigurierte Tests laufen automatisch. Bei Fehlschlag wird zurückgerollt.
+TobyKi verwendet `src/core/codestudio.js` und die bestehende TobyCode-Patchansicht.
+Projekt-/Taskbindung und aktuelle Dateihashes werden geprüft. Die weitere
+Sandbox-, Test-, Freigabe- und Übernahmelogik bleibt bei TobyKi. Der Adapter
+benötigt den Kernordner in der jeweiligen TobyKi-Installation und Python 3.11+.
+`CODESTUDIO_PYTHON` kann einen absoluten Interpreterpfad vorgeben.
+„In VS Code öffnen“ übergibt den gebundenen Projektordner an das installierte
+CodeStudio-Paket. Dieses wird standardmäßig neben TobyKi als `CodeStudio`
+erwartet; `CODESTUDIO_HOME` kann den Installationsordner vorgeben.
+Eine erfolgreiche Startübergabe bestätigt noch keine sichtbare Editorwirkung.
 
-## Diagnose
+Beide TobyKi-Einstiege verwenden dessen Main-Modelltransport. Vor jedem
+tatsächlichen Modellaufruf werden die aktuelle Hostkonfiguration, das exakt
+installierte Modell und die Ressourcen erneut geprüft. Kontext und CPU-/GPU-
+Optionen kommen dabei aus TobyKi, nicht aus den Standalone-Defaults.
+Die Vorschlagsbrücke verwendet gebundene JSONL-Modellaufrufe; VS Code erhält
+eine lokale, auf ein Projekt begrenzte Sitzung für Modelle und Chat.
+Die Sitzung endet nach 30 Minuten oder beim Beenden von TobyKi. Ungültige,
+abgebrochene oder veränderte Bindungen führen zu einem Fehler und niemals
+zum stillen Wechsel auf Port 11434. Ein offener Vorschlag wird vor Anwendung
+erneut gegen die Hostsitzung geprüft. Für eine neue Sitzung das Projekt
+erneut aus TobyKi öffnen. Die Sitzungsdatei bleibt im privaten TobyKi-Datenordner;
+Projektdateien und Standalone-Konfiguration werden dadurch nicht geändert.
 
-```powershell
-python codestudio.py --doctor
-python -m unittest tests.test_core -v
-```
+Ein Installationsbeleg `CodeStudio-install.json` bindet Erweiterungsordner,
+Erweiterungsversion und SHA-256 der ausgelieferten Dateien. Vor dem Start
+prüft TobyKi diese Dateien sowie VS-Code-Installation und Projektpfad erneut.
+Dieser Beleg wird erst nach tatsächlicher VSIX-Installation erzeugt.
 
-## Modellprofile im Setup
+HaloMonsterAI kann später denselben Vorschlagsadapter verwenden. Seine
+historischen Beispiel-Patches und Marker-Tests werden nicht als Projektengine
+übernommen. Eine heutige Halo-Integration oder TobyKi-Live-Installation ist
+mit dem Vorhandensein dieser Quellen nicht behauptet.
 
-- 8 GB VRAM → `qwen2.5-coder:7b`
-- 12 GB VRAM → `qwen2.5-coder:14b`
-- 16 GB VRAM → `gpt-oss:20b`
+## Schutz und Grenzen
 
-Das Modell kann in der GUI jederzeit auf ein anderes installiertes Ollama-Modell umgestellt werden.
+Workspace- und Dateihashes verhindern veraltete Anwendung; Vorschläge sind
+nicht wiederverwendbar. Links, geschützte Ordner und typische Zugangsdatenpfade
+sind ausgeschlossen. Mutmaßliche Zugangsdaten im Text werden vor Modellkontext
+blockiert; dies ist eine Musterprüfung, keine Garantie für beliebige Geheimnisse.
+Dateien müssen UTF-8-Text sein; vorhandene Zeilenenden bleiben erhalten.
 
-## Sicherheitsprinzipien
+Testprogramme sind vom Benutzer gewählte ausführbare Programme. Sie besitzen
+dessen Dateirechte; der Testprozess ist keine Sicherheits-Sandbox. Unter Windows
+werden Tests samt Nachkommen in einem Job kontrolliert, ihre Ausgabe begrenzt
+und der Prozessbaum vor Rückrollen beendet. Ein nicht bestätigtes Prozessende
+bleibt gesperrt und verlangt manuelle Prüfung der Sicherung. Gleichzeitige
+Bearbeitung durch fremde Programme kann zu einem bewusst erhaltenen Konflikt
+führen. Bei einem harten Programm-/Stromausfall bleiben Sicherungsmanifest und
+gegebenenfalls Workspace-Lock erhalten; eine automatische Neustart-Recovery
+wird nicht behauptet.
 
-- nur relative Pfade im Workspace
-- `../`, `.git`, `node_modules`, Venv-/Build-/Cache-Verzeichnisse gesperrt
-- bestehende Dateien bevorzugt per exaktem `replace`
-- Whole-file-write nur nach vollständigem Lesen im selben Task
-- atomare Writes
-- Task-Snapshot + Rollback
-- Tests nur aus `config.json`, immer `shell=False`
-- Änderungen werden vor dem Schreiben als Unified Diff gezeigt
-- Receipt pro Lauf unter `runs/`
+## Tests
 
-## Tests konfigurieren
+`python -m unittest discover -v` im CodeStudio-Ordner.
+TobyKi: `node tests/run_all_tests.js` im TobyKi-Quellverzeichnis.
+Testbelege gelten für ihre jeweilige Quellidentität und Testumgebung.
 
-```json
-"tests": [
-  {
-    "name": "unit",
-    "argv": ["python", "-m", "pytest", "-q"],
-    "timeout_sec": 300
-  }
-]
-```
+## Herkunft
+
+Ausgangspunkt: `hebussphax-wq/CodeStudio`, Commit
+`0fc7b7119439ddb27e7d44b9ae72867f15bcea28` vom 14. September 2026.
+Die MIT-Lizenz des Ausgangspakets bleibt als `LICENSE` enthalten.
+Konsolidierung ohne Änderung der TobyKi-Produktversion.
