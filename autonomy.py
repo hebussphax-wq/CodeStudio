@@ -131,6 +131,7 @@ class AutonomousRun:
         self.emit = emit
         self.cancel_event = threading.Event()
         self.core = AutonomousCore(root, config, log=lambda msg:emit({'event':'log','text':redact(msg)}), transport=transport)
+        self.core.module_mode = bool(self.workflow)
         self.core.cancel_event = self.cancel_event
         self.core.deadline = time.monotonic()+self.limits['seconds']
         self.core.model_calls = 0

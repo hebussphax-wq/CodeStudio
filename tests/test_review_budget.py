@@ -11,3 +11,11 @@ class ReviewBudgetTests(unittest.TestCase):
    self.assertEqual(review['options']['num_predict'],1024);self.assertEqual(coder['options']['num_predict'],6144)
    self.assertEqual(core.config['options']['num_predict'],6144);self.assertFalse(review['think'])
    self.assertEqual(review['format']['properties']['issues']['maxItems'],4)
+
+ def test_module_schema_has_one_source_copy_and_keeps_legacy_replace(self):
+  with tempfile.TemporaryDirectory() as d:
+   core=CodeStudioCore(pathlib.Path(d),{'workspace':d});core.module_mode=True
+   item=core.output_schema('coder')['properties']['edits']['items']
+   self.assertEqual(set(item['required']),{'path','op','content'})
+   self.assertNotIn('old_text',item['properties']);self.assertFalse(item['additionalProperties'])
+   core.module_mode=False;self.assertIn('old_text',core.output_schema('coder')['properties']['edits']['items']['properties'])

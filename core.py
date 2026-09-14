@@ -165,14 +165,20 @@ class CodeStudioCore:
         data = self.ollama_request("/api/tags", timeout=10)
         return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
 
+    def output_schema(self, role):
+        if role == 'coder' and getattr(self,'module_mode',False):
+            return {'type':'object','properties':{'edits':{'type':'array','minItems':1,'maxItems':4,
+                'items':{'type':'object','properties':{'path':{'type':'string'},'op':{'type':'string','enum':['create','write','delete']},'content':{'type':'string'}},'required':['path','op','content'],'additionalProperties':False}},'notes':{'type':'string','maxLength':300}},'required':['edits','notes'],'additionalProperties':False}
+        return SCHEMA[role]
+
     def chat(self, role: str, user: str, model: str) -> dict:
         if self.transport is not None:
             result = self.transport('chat', {'role': role, 'model': model, 'system': SYSTEM[role],
-                'messages': [{'role': 'user', 'content': user}], 'schema': SCHEMA[role]})
+                'messages': [{'role': 'user', 'content': user}], 'schema': self.output_schema(role)})
             if not isinstance(result, dict):
                 raise ValueError('Host lieferte kein strukturiertes Modellobjekt.')
             return result
-        fmt: Any = SCHEMA[role] if self.config.get("structured_output", True) else "json"
+        fmt: Any = self.output_schema(role) if self.config.get("structured_output", True) else "json"
         body = {
             "model": model,
             "stream": False,
@@ -185,6 +191,8 @@ class CodeStudioCore:
             body['options'] = {**body['options'], 'num_predict': min(body['options'].get('num_predict', 1024), 1024)}
         if 'think' in self.config:
             body['think'] = self.config['think']
+        if role == 'coder' and getattr(self,'module_mode',False):
+            body['messages'][0]['content']='Implement ONLY the bounded module contract. Return JSON edits with exactly path, op (create/write/delete), content (complete source). No old_text or new_text, no duplicate code, no shell commands. Keep implementation concise and complete.'
         raw = ""
         for attempt in (1, 2):
             response = self.ollama_request("/api/chat", body)

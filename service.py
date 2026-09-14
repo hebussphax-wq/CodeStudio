@@ -1,6 +1,8 @@
 from moduleflow import validate_profiles
 """Local line-JSON service for the VS Code extension. One workspace per process."""
 import argparse
+import os
+from localtools import ensure_tool
 import json
 import pathlib
 import sys
@@ -39,6 +41,7 @@ class StudioService:
     def reserve(self, request):
         with self.state_lock:
             if self.active: raise ValueError('Ein autonomer Auftrag läuft bereits.')
+            if not self.transport: ensure_tool(self.core.config.get('local_tools_config'),'ollama',self.core.config.get('ollama_url','http://127.0.0.1:11434'))
             self.active = AutonomousRun(self.core.root,self.core.config,request,self.emit,self.transport)
             self.proposals.clear(); self.core.pending.clear()
             return self.active
@@ -83,9 +86,11 @@ class StudioService:
         if command == 'models':
             if self.transport:
                 return {**self.transport('models',{}),'workspace':str(self.core.workspace)}
+            ensure_tool(self.core.config.get('local_tools_config'),'ollama',self.core.config.get('ollama_url','http://127.0.0.1:11434'))
             return {'models':self.core.installed_models(),'workspace':str(self.core.workspace)}
         if command in ('graphics_models','graphics_submit','graphics_collect'):
             if self.transport: raise ValueError('Grafikwerkzeug benötigt einen eigenen Hostvertrag; derzeit nur Standalone.')
+            ensure_tool(self.core.config.get('local_tools_config'),'comfyui',request.get('endpoint','http://127.0.0.1:8189'))
             from comfyassets import ComfyAssets
             assets=ComfyAssets(self.core.workspace,self.core.runs.parent,request.get('endpoint','http://127.0.0.1:8189'))
             if command=='graphics_models': return {'models':assets.models()}
@@ -154,6 +159,8 @@ def main():
     root = pathlib.Path(__file__).resolve().parent
     config = json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
     config.update(workspace=args.workspace,state_dir=args.state_dir)
+    if getattr(sys,'frozen',False):
+        config['local_tools_config']=str(pathlib.Path(os.environ.get('LOCALAPPDATA',pathlib.Path.home()/'AppData/Local'))/'CodeStudio/local-tools.json')
     output_lock = threading.Lock()
     def emit(value):
         with output_lock:

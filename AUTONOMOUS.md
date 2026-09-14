@@ -144,3 +144,5 @@ VS Code: „Modul-Workflow laden“ liest eine JSON-Datei mit task, workflow und
 Lokale Coder und ComfyUI teilen Grafikspeicher: schwere Generierungen nacheinander ausführen. Das Vorhandensein eines Modells/Studios beweist weder Anbindung noch erfolgreiche Entwicklung.
 
 Im Modulmodus erfolgt zuerst die begrenzte Anwendung innerhalb der Rückrolltransaktion, dann der reale kumulative Test und erst bei bestandenem Test das Modellreview. Dadurch bewertet der Reviewer konkrete Ergebnisse. Kein Modul wird vor beidem als verified markiert. Der freie Diff-/Freigabemodus behält sein Review vor Anwendung.
+
+Modul-Coder liefern pro Datei nur path, op und vollständigen content; die separaten old_text/new_text-Felder des freien Patch-Modus entfallen. Bereits installierte lokale Werkzeugprofile können optional unter LOCALAPPDATA/CodeStudio/local-tools.json registriert werden. Der Standalone-Dienst startet ausschließlich passende, aktivierte lokale Profile mit direkten Argumentlisten, prüft ihre API und protokolliert den Prozess. Bei unklarem Start bleibt eine Startsperre erhalten. Keine Modell-Downloads oder globale Dienständerungen.
