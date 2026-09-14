@@ -42,6 +42,10 @@
       ]
     },
     "commands": [
+      {"command": "codestudio.inspect", "title": "CodeStudio: Projekt und Editorkontext prüfen"},
+      {"command": "codestudio.projectFile", "title": "CodeStudio: Projektdatei öffnen"},
+      {"command": "codestudio.problems", "title": "CodeStudio: VS-Code-Probleme anzeigen"},
+      {"command": "codestudio.runTests", "title": "CodeStudio: Projekttests jetzt ausführen"},
       {
         "command": "codestudio.generate",
         "title": "CodeStudio: Aufgabe planen und Diff erzeugen"

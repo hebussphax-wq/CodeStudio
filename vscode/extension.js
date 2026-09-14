@@ -1,5 +1,6 @@
 'use strict';
 const vscode=require('vscode'),fs=require('fs'),path=require('path'),crypto=require('crypto'),{spawn}=require('child_process');
+const editorContext=require('./editor_context');
 
 class Engine {
  constructor(extension,folder,state,output){
@@ -25,7 +26,7 @@ class Engine {
  }
  request(command,data={}){if(command==='autonomous')this.autonomousId=data.run_id;if(this.closed)return Promise.reject(Error('CodeStudio-Kern ist nicht mehr verbunden.'));return new Promise((resolve,reject)=>{const id=++this.sequence;this.pending.set(id,{resolve,reject,command});this.child.stdin.write(JSON.stringify({id,command,...data})+'\n');});}
  fail(error){this.closed=true;for(const p of this.pending.values())p.reject(error);this.pending.clear();}
- dispose(){const working=[...this.pending.values()].some(p=>p.command==='apply'||p.command==='autonomous');if(this.autonomousId&&!this.closed)this.child.stdin.write(JSON.stringify({command:'cancel',run_id:this.autonomousId})+'\n');this.child.stdin.end();if(!working)this.child.kill();}
+ dispose(){const working=[...this.pending.values()].some(p=>['apply','autonomous','test'].includes(p.command));if(this.autonomousId&&!this.closed)this.child.stdin.write(JSON.stringify({command:'cancel',run_id:this.autonomousId})+'\n');this.child.stdin.end();if(!working)this.child.kill();}
 }
 
 function activate(context){
@@ -42,6 +43,10 @@ function activate(context){
   item('Autonom entwickeln','codestudio.autonomous',undefined,'rocket'),
   ...(activeRun?[item('Autonomen Auftrag stoppen','codestudio.stop',undefined,'debug-stop')]:[]),
   item('Aufgabe planen und Diff erzeugen','codestudio.generate',undefined,'edit'),
+  item('Projekt und Editorkontext prüfen','codestudio.inspect',undefined,'inspect'),
+  item('Projektdatei öffnen','codestudio.projectFile',undefined,'go-to-file'),
+  item('Probleme in VS Code anzeigen','codestudio.problems',undefined,'error'),
+  item('Projekttests jetzt ausführen','codestudio.runTests',undefined,'testing-run-icon'),
   item('Modell: '+config().get('model'),'codestudio.model',undefined,'server'),
   item('Kontext: '+config().get('contextTokens')+' Tokens','codestudio.context',undefined,'settings'),
   item(config().get('testCommand',[]).length?'Projekttests eingestellt':'Projekttests einstellen','codestudio.tests',undefined,'beaker'),
@@ -73,6 +78,10 @@ function activate(context){
  async function update(key,value){if(value===undefined)return;await config().update(key,value,vscode.ConfigurationTarget.WorkspaceFolder);proposal=null;if(engine&&!engine.closed)await engine.request('reject');changed.fire();}
  async function showDiff(rel){if(!proposal)return;const change=proposal.changes.find(c=>c.path===rel);if(!change)return;const base=vscode.Uri.parse('codestudio-diff:/'+proposal.proposal_id+'/'+encodeURIComponent(rel));const before=base.with({query:'before'}),after=base.with({query:'after'});documents.set(before.toString(),change.before||'');documents.set(after.toString(),change.after||'');await vscode.commands.executeCommand('vscode.diff',before,after,rel+' · CodeStudio-Vorschlag',{preview:true});}
  const commands={
+  'codestudio.inspect':()=>guard(async()=>{if(!await ensure())return;const snapshot=editorContext.collect(vscode,folder);const uri=vscode.Uri.parse('codestudio-diff:/editor-context/'+Date.now()+'.json');documents.set(uri.toString(),JSON.stringify(snapshot,null,2));await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));return snapshot;}),
+  'codestudio.problems':()=>vscode.commands.executeCommand('workbench.actions.view.problems'),
+  'codestudio.projectFile':()=>guard(async()=>{if(!await ensure())return;const files=await vscode.workspace.findFiles(new vscode.RelativePattern(folder,'**/*'), '**/{.git,node_modules,.venv,dist,build,target}/**',300);const items=files.map(uri=>({label:editorContext.relativeFile(folder,uri),uri})).filter(x=>x.label);const selected=await vscode.window.showQuickPick(items,{placeHolder:'Datei im gewählten CodeStudio-Projekt öffnen'});if(selected)await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(selected.uri));}),
+  'codestudio.runTests':()=>guard(async()=>{const client=await ensure();if(!client)return;if(dirty())throw Error('Offene Änderungen zuerst speichern.');if(!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen.');busy=true;changed.fire();try{await client.request('configure',{context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[])});const result=await client.request('test');output.appendLine(result.output||'');output.show(true);status=result.returncode===0?'Projekttests bestanden':'Projekttests fehlgeschlagen';return result;}finally{busy=false;changed.fire();}}),
   'codestudio.history':()=>guard(async()=>{const client=await ensure();if(!client)return;const result=await client.request('history');const chosen=await vscode.window.showQuickPick(result.runs.map(r=>({label:r.status+' · '+r.task,description:r.run_id,receipt:r.receipt_path})),{placeHolder:'Autonomen Auftrag und QC-Beleg öffnen'});if(chosen)await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(chosen.receipt)));}),
   'codestudio.output':()=>output.show(),
   'codestudio.openDiff':showDiff,
@@ -87,7 +96,7 @@ function activate(context){
    try{
     const settings=settingsIdentity();
     await client.request('configure',{context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[])});
-    proposal=await client.request('analyze',{task,model:options?.model||config().get('model')});proposal.settings=settings;
+    proposal=await client.request('analyze',{task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:options?.model||config().get('model')});proposal.settings=settings;
     if(settings!==settingsIdentity()){proposal=null;await client.request('reject');throw Error('Einstellungen während der Planung geändert. Bitte neu analysieren.');}
     status='Vorschlag prüfen · '+proposal.changes.length+' Datei(en)';
     output.appendLine((proposal.plan.plan||[]).join('\n'));output.appendLine(proposal.diff);
@@ -111,7 +120,7 @@ function activate(context){
    const watch=setInterval(()=>{if(!stopSent&&(dirty()||settings!==settingsIdentity()||!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===workspace))){stopSent=true;client.request('cancel',{run_id:activeRun}).catch(()=>{});}},250);
    try{
     await client.request('configure',{context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[])});
-    const result=await client.request('autonomous',{run_id:activeRun,approved:true,task,model:config().get('model'),limits});
+    const result=await client.request('autonomous',{run_id:activeRun,approved:true,task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:config().get('model'),limits});
     const labels={succeeded:'Autonom abgeschlossen · Tests und QC bestanden',cancelled:'Abgebrochen · Änderungen zurückgerollt',timed_out:'Zeitbudget erreicht · zurückgerollt',budget_exhausted:'Budget erreicht · zurückgerollt',failed:'Auftrag fehlgeschlagen · zurückgerollt',conflict:'Fremde Änderung erkannt · Auftrag gestoppt',rollback_conflict:'Konflikt · Sicherung prüfen',recovery_required:'Prozessende unklar · Wiederherstellung prüfen',blocked:'Rückfrage erforderlich · Auftrag gestoppt'};
     status=labels[result.receipt.status]||result.receipt.status;
     output.appendLine(status+'\n'+(result.receipt.error||'')+'\n'+(result.receipt.test?.output||'')+'\nBeleg: '+result.receipt_path);

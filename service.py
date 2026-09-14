@@ -56,6 +56,12 @@ class StudioService:
 
     def _handle(self, request):
         command = request.get('command')
+        if command == 'test':
+            if not self.core.config.get('tests'):
+                raise ValueError('Zuerst Projekttests konfigurieren.')
+            if self.transport:
+                self.transport('models', {})
+            return self.core.run_tests()
         if command == 'models':
             if self.transport:
                 return {**self.transport('models',{}),'workspace':str(self.core.workspace)}

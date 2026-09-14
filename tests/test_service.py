@@ -43,3 +43,12 @@ class ServiceTests(unittest.TestCase):
         proposed=self.propose();(self.workspace/'calc.py').write_text('user change')
         with self.assertRaises(ValueError):self.service.handle({'command':'apply','proposal_id':proposed['proposal_id'],'approved':True})
         self.assertEqual((self.workspace/'calc.py').read_text(),'user change')
+
+    def test_explicit_test_command_requires_profile_and_reports_real_exit(self):
+        import sys
+        with self.assertRaises(ValueError):
+            self.service.handle({'command': 'test'})
+        self.service.handle({'command': 'configure', 'test_argv': [sys.executable, '-c', 'raise SystemExit(3)']})
+        result = self.service.handle({'command': 'test'})
+        self.assertEqual(result['returncode'], 3)
+        self.assertEqual((self.workspace/'calc.py').read_bytes(), b'value=1\n')

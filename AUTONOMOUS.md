@@ -22,6 +22,16 @@ Reparatur übergeben; keine unbegrenzte Wiederholung.
 
 ## Kontext und Lernen aus Fehlschlägen
 
+In VS Code ergänzt die Erweiterung den Auftrag um das gewählte lokale Projekt,
+die aktive Datei und Zeile, eine begrenzte Auswahl sowie Fehler/Warnungen der
+Sprachdienste. Andere Arbeitsbereiche und geschützte Pfade werden ausgefiltert.
+Die Ansicht bietet Dateinavigation, die native Probleme-Ansicht, eine lesbare
+Kontextvorschau und das explizite Ausführen der konfigurierten Projekttests.
+Ungespeicherte Änderungen verhindern die Arbeit am abweichenden Plattenstand.
+Native Diffs und die vorhandene Freigabe/Rückrolllogik bleiben maßgeblich.
+Editor-Diagnosen sind Beobachtungen; sie ersetzen keine ausgeführten Tests.
+Das Modell erhält keine beliebige VS-Code-Befehls- oder Terminalausführung.
+
 Coder und Reviewer erhalten zusätzlich zum Schreibplan einen getrennten
 Lesekontext: README/Anforderungen, vorhandene Tests und Scout-Treffer.
 Standardbudget: insgesamt 16.000 Quellbytes, höchstens 8 Dateien und 8.000 Bytes
