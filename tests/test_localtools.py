@@ -24,3 +24,21 @@ class LocalToolsTests(unittest.TestCase):
  def test_unregistered_endpoint_never_starts_program(self):
   with patch('localtools.subprocess.Popen') as launch:
    self.assertEqual(ensure_tool(self.path,'ollama','http://127.0.0.1:9999')['status'],'externally_managed');launch.assert_not_called()
+
+ def test_late_healthy_owned_process_clears_only_its_timeout_lock(self):
+  child=MagicMock(pid=123);child.poll.return_value=None
+  with patch('localtools.process_stamp',return_value='created-A'),patch('localtools.probe',return_value=None),patch('localtools.subprocess.Popen',return_value=child):
+   with self.assertRaises(RuntimeError):ensure_tool(self.path,'ollama',self.profile['endpoint'],timeout=0)
+  with patch('localtools.process_stamp',return_value='created-A'),patch('localtools.probe',return_value={'models':[]}):
+   self.assertEqual(ensure_tool(self.path,'ollama',self.profile['endpoint'])['status'],'running')
+  self.assertFalse((self.root/'ollama.starting').exists())
+  self.assertTrue(json.loads((self.root/'ollama-start.json').read_text())['late_start_reconciled'])
+  with patch('localtools.process_stamp',return_value='created-B'),patch('localtools.probe',side_effect=[None,{'models':[]}]),patch('localtools.subprocess.Popen',return_value=child) as launch:
+   ensure_tool(self.path,'ollama',self.profile['endpoint']);self.assertEqual(launch.call_count,1)
+ def test_reused_pid_cannot_clear_timeout_lock(self):
+  child=MagicMock(pid=123);child.poll.return_value=None
+  with patch('localtools.process_stamp',return_value='created-A'),patch('localtools.probe',return_value=None),patch('localtools.subprocess.Popen',return_value=child):
+   with self.assertRaises(RuntimeError):ensure_tool(self.path,'ollama',self.profile['endpoint'],timeout=0)
+  with patch('localtools.process_stamp',return_value='different-process'),patch('localtools.probe',return_value={'models':[]}):
+   ensure_tool(self.path,'ollama',self.profile['endpoint'])
+  self.assertTrue((self.root/'ollama.starting').exists())
