@@ -119,14 +119,16 @@
         "codestudio.model": {
           "type": "string",
           "default": "qwen2.5-coder:7b",
-          "description": "Installiertes lokales Ollama-Modell."
+          "description": "Installiertes lokales Ollama-Modell.",
+          "scope": "resource"
         },
         "codestudio.contextTokens": {
           "type": "number",
           "default": 16384,
           "minimum": 1024,
           "maximum": 262144,
-          "description": "Kontextfenster; größere Werte benötigen mehr Modellspeicher."
+          "description": "Kontextfenster; größere Werte benötigen mehr Modellspeicher.",
+          "scope": "resource"
         },
         "codestudio.testCommand": {
           "type": "array",
@@ -134,7 +136,8 @@
             "type": "string"
           },
           "default": [],
-          "description": "Testprogramm und Argumente. Ohne Tests bleibt das Ergebnis ungeprüft."
+          "description": "Testprogramm und Argumente. Ohne Tests bleibt das Ergebnis ungeprüft.",
+          "scope": "resource"
         },
         "codestudio.pythonPath": {
           "type": "string",
@@ -146,21 +149,24 @@
           "default": 6,
           "minimum": 1,
           "maximum": 12,
-          "description": "Maximale Zahl autonom geplanter Implementierungsschritte."
+          "description": "Maximale Zahl autonom geplanter Implementierungsschritte.",
+          "scope": "resource"
         },
         "codestudio.autonomousRepairs": {
           "type": "integer",
           "default": 3,
           "minimum": 0,
           "maximum": 8,
-          "description": "Automatische Reparaturen nach Abarbeitung des Plans."
+          "description": "Automatische Reparaturen nach Abarbeitung des Plans.",
+          "scope": "resource"
         },
         "codestudio.autonomousMinutes": {
           "type": "integer",
           "default": 30,
           "minimum": 1,
           "maximum": 120,
-          "description": "Zeitbudget für einen autonomen Auftrag."
+          "description": "Zeitbudget für einen autonomen Auftrag.",
+          "scope": "resource"
         },
         "codestudio.ollamaUrl": {
           "type": "string",
