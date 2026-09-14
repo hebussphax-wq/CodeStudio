@@ -20,6 +20,30 @@ Modellanfragen, 32 geänderte Dateien. Grenzen sind keine Leistungsgarantie
 für ein bestimmtes Modell. Gescheiterte Teilschritte werden an die abschließende
 Reparatur übergeben; keine unbegrenzte Wiederholung.
 
+## Kontext und Lernen aus Fehlschlägen
+
+Coder und Reviewer erhalten zusätzlich zum Schreibplan einen getrennten
+Lesekontext: README/Anforderungen, vorhandene Tests und Scout-Treffer.
+Standardbudget: insgesamt 16.000 Quellbytes, höchstens 8 Dateien und 8.000 Bytes
+pro Datei. Kürzungen werden markiert. Zugangsdaten, Binärdateien und unzulässige
+Pfade bleiben ausgeschlossen. Referenzen erweitern den Schreibplan nicht.
+Ihre Hashes binden den Vorschlag: geänderte Anforderungen machen ihn ungültig.
+
+Abgelehnte Änderungsvorschläge werden als lokale Fehlererfahrungen unter
+`lessons/` neben `runs/` gespeichert: Änderungshash und gekürzte Diagnose.
+Der Schlüssel bindet Projekt, exakten Auftrag und gelesene Ausgangsdateien.
+Ein weiterer Versuch bekommt diese Diagnosen; identische bereits abgelehnte
+Änderungen beenden die Vorschlagsrunde als `no_progress`, bevor dieselbe
+Modellprüfung wiederholt wird. Änderungen am Ausgangsstand erzeugen einen
+anderen Schlüssel. Die letzten acht Diagnosen dienen als Daten und erteilen
+keine Tool- oder Schreibrechte. Dies ist nachvollziehbare Fehlererinnerung,
+kein Training der Modellgewichte und keine automatische Installation von Skills.
+
+Der DonkeyMonkey-Test hat diese Kontextlücke im vorherigen Kern nachgewiesen:
+ein Plan für eine neue `game.js` enthielt nicht den Inhalt der vorhandenen
+README/Testdateien. Die Regressionen in `tests/test_reference_context.py`
+prüfen diese Ursache, Kontextgrenzen, Änderungsbindung und Wiederholungsschutz.
+
 Der Auftrag besitzt eine Gesamtsicherung. Zwischenstände können Tests noch
 nicht bestehen. Bei Fehlschlag, Budgetende oder Abbruch werden die eigenen
 Änderungen zurückgerollt. Fremde Änderungen bleiben erhalten und erzeugen

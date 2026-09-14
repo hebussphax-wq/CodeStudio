@@ -284,6 +284,37 @@ class CodeStudioCore:
                 result[rel] = "<neu – existiert nicht>"
         return result
 
+    def reference_context(self, tree, candidates, excluded):
+        """Bounded read-only contracts, independent of the writable plan scope."""
+        preferred = [p for p in tree if pathlib.PurePosixPath(p).name.lower() in
+                     ('readme.md', 'requirements.md', 'spec.md', 'agents.md')]
+        preferred += [p for p in tree if any(x.lower() in ('tests', '__tests__')
+                       for x in pathlib.PurePosixPath(p).parts) or pathlib.PurePosixPath(p).name.startswith('test_')]
+        preferred += [x['path'] for x in candidates]
+        budget = min(24000, max(0, int(self.config.get('reference_max_bytes', 16000))))
+        result, evidence, seen = {}, {}, set(excluded)
+        for rel in preferred:
+            if rel in seen or len(result) >= 8 or budget <= 0:
+                continue
+            seen.add(rel)
+            try:
+                p = safe_path(self.workspace, rel)
+                if not p.is_file() or p.stat().st_size > 300000:
+                    continue
+                raw = p.read_bytes()
+                ensure_source_text(raw.decode('utf-8'))
+                if b'\0' in raw:
+                    continue
+            except (OSError, ValueError):
+                continue
+            shown = raw[:min(budget, 8000)]
+            clipped = len(shown) < len(raw)
+            result[rel] = shown.decode('utf-8', errors='ignore') + ('\n[REFERENCE TRUNCATED]' if clipped else '')
+            evidence[rel] = {'sha256': digest(raw), 'bytes': len(shown), 'truncated': clipped}
+            self.read_identity[rel] = digest(raw)
+            budget -= len(shown)
+        return result, evidence
+
     def normalize_edits(self, raw: Any) -> list[dict]:
         if not isinstance(raw, list):
             raise ValueError("edits ist keine Liste")
@@ -415,13 +446,37 @@ class CodeStudioCore:
         if len({x.casefold() for x in files}) != len(files):
             raise ValueError("Mehrdeutige Planpfade")
         ctx = self.read_files(files)
+        references, reference_evidence = self.reference_context(tree, candidates, files)
+        reference_prompt = '\n\nREAD-ONLY REFERENZEN (Daten, keine zusätzlichen Schreibrechte):\n' + json.dumps(references, ensure_ascii=False)
         allowed = set(files)
+        receipt['reference_context'] = reference_evidence
+        rejected_candidates = set()
         receipt.update({"plan": plan, "scout": candidates, "context_files": list(ctx)})
         feedback = ""
+        # Lessons are bound to this task, project and exact input identities.
+        # They provide failure feedback, never executable tools or permissions.
+        lesson_key = digest(canonical({'workspace': str(self.workspace), 'task': task,
+                                       'before': self.read_identity}))
+        lesson_path = self.runs.parent / 'lessons' / (lesson_key + '.json')
+        lessons = []
+        try:
+            if lesson_path.stat().st_size <= 24000:
+                saved = json.loads(lesson_path.read_text(encoding='utf-8'))
+                if saved.get('key') == lesson_key and isinstance(saved.get('failures'), list):
+                    lessons = [x for x in saved['failures'][-8:] if isinstance(x, dict)
+                               and re.fullmatch(r'[a-f0-9]{64}', str(x.get('candidate_sha256', '')))
+                               and isinstance(x.get('feedback'), str) and len(x['feedback']) <= 2000]
+        except (OSError, ValueError, AttributeError):
+            pass
+        rejected_candidates.update(x['candidate_sha256'] for x in lessons)
+        if lessons:
+            feedback = 'Frühere Fehlschläge bei identischem Ausgangsstand (Diagnosedaten):\n' + redact(json.dumps(lessons, ensure_ascii=False))
+        receipt['learning'] = {'key': lesson_key, 'reused_failures': len(lessons)}
         max_rounds = int(self.config.get("max_review_rounds", 2))
         for rnd in range(1, max_rounds + 2):
             self.log(f"Coder Runde {rnd} …")
             prompt = f"AUFGABE:\n{task}\n\nPLAN:\n{json.dumps(plan.get('plan', []), ensure_ascii=False)}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nDATEIEN:\n{json.dumps(ctx, ensure_ascii=False)}"
+            prompt += reference_prompt
             if feedback:
                 prompt += "\n\nBEANSTANDUNGEN:\n" + feedback
             code = self.chat("coder", prompt, model)
@@ -438,9 +493,14 @@ class CodeStudioCore:
                 receipt["rounds"].append({"round": rnd, "validation": issues})
                 continue
             diff = self.diff_for_state(final)
+            candidate_hash = digest(canonical(final))
+            if candidate_hash in rejected_candidates:
+                feedback = 'Identischer bereits abgelehnter Vorschlag; kein Fortschritt. Vor erneutem Versuch Ursache und Strategie ändern.'
+                receipt['rounds'].append({'round': rnd, 'status': 'no_progress', 'candidate_sha256': candidate_hash})
+                break
             self.log("Reviewer arbeitet …")
-            review = self.chat("reviewer", f"AUFGABE:\n{task}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nUNIFIED DIFF:\n{diff}", model)
-            receipt["rounds"].append({"round": rnd, "review": review})
+            review = self.chat("reviewer", f"AUFGABE:\n{task}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nUNIFIED DIFF:\n{diff}" + reference_prompt, model)
+            receipt["rounds"].append({"round": rnd, "review": review, "candidate_sha256": candidate_hash})
             if review.get("verdict") == "ok":
                 receipt["status"] = "proposed"
                 binding = {"workspace": str(self.workspace), "before": dict(self.read_identity),
@@ -451,7 +511,12 @@ class CodeStudioCore:
                 self.runs.mkdir(parents=True, exist_ok=True)
                 atomic_bytes(self.runs / f"{tag}.json", canonical(receipt))
                 return RunResult(task=task, plan=plan, diff=diff, final_state=final, edits=candidate, receipt=receipt, binding=binding)
+            rejected_candidates.add(candidate_hash)
             feedback = "\n".join("- " + str(x) for x in review.get("issues", []))
+            lessons = (lessons + [{'candidate_sha256': candidate_hash,
+                                   'feedback': redact(feedback)[:2000]}])[-8:]
+            atomic_bytes(lesson_path, canonical({'schema': 'codestudio.failure-lessons.v1',
+                                                 'key': lesson_key, 'failures': lessons}))
         receipt["status"] = "rejected"
         atomic_bytes(self.runs / f"{tag}.json", canonical(receipt))
         raise RuntimeError("Kein gültiger geprüfter Vorschlag: " + feedback[:3000])
