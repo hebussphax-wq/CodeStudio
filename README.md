@@ -111,3 +111,10 @@ Ausgangspunkt: `hebussphax-wq/CodeStudio`, Commit
 `0fc7b7119439ddb27e7d44b9ae72867f15bcea28` vom 14. September 2026.
 Die MIT-Lizenz des Ausgangspakets bleibt als `LICENSE` enthalten.
 Konsolidierung ohne Änderung der TobyKi-Produktversion.
+
+## Lokales Entwicklungsbeispiel
+
+[Donkey Monkey](examples/donkey-monkey/README.md) enthält das durch lokale
+CodeStudio-Modelläufe erzeugte Vier-Level-Spiel, den mit ComfyUI erzeugten
+Hintergrund, ausführbare Prüfungen und eine getrennte Dokumentation der
+autonomen Arbeitsschritte und der betreuten Abnahme.

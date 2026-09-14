@@ -1,0 +1,104 @@
+{
+  "schema": "codestudio.example-evidence.v1",
+  "engine_commit": "310091eb2eb8380351ad8bbc307201dee96509e8",
+  "created_at": "2026-09-14T21:37:24.478Z",
+  "model": "qwen3.6:27b",
+  "provider": "local Ollama",
+  "autonomy": "Operator-supervised modular development with bounded autonomous generation, test/repair and review; not a single unattended run",
+  "operator_work": [
+    "Requirements and module contracts",
+    "Acceptance tests and controllers",
+    "Byte-identical adoption of model-emitted candidates after verified rollback",
+    "External browser and VS Code acceptance"
+  ],
+  "files": {
+    "index.html": "17d271da144a6c893ae50b2aae9582bb5b88c46d82411697ed40e17989e69972",
+    "style.css": "abb9b79f962ab562152ef0ae72c3c1434b5a8156f4303f3b8aebb9d12bf098ff",
+    "levels.js": "444ecb5cdfb8f487aee9f5c16652bbbd6c28f6bf9c35c621caafc95d2e3001d5",
+    "physics.js": "66c928e3b2f614df833961eb42a05f969de5720ffc0462fde0aa1bbabb9ca50b",
+    "game.js": "9791794406d4fbfbcfb72843d32c8ef449a982d7b31325722f926823bba0168f",
+    "renderer.js": "7ee718eb5df3795f5abc88126cbfd8e25873283039bdc7c802f4077605e4658e",
+    "main.js": "62d261f58cb7e0b13f1c7ee8d6b8f6cf3f75478fc928945534336b4b58bd62ea",
+    "assets/jungle.png": "03d88ce2e6c3ea2f2060842a0d9539915d6bb5eeb3da33e9b721bc4fa08734b4"
+  },
+  "model_runs": {
+    "levels": "fb9b85d4fada4e45afcfd49d0e078345",
+    "physics": "d663e34e7db543b7ab3bcfe6e1bd02e0",
+    "game_repair": "3b2632950cf14dccba6a46b30de81731",
+    "browser": "0bb0117cb14e44d7ba1ec99ba5f860b4",
+    "hud_candidate": "ff308718f07143558933742f8a94a22b",
+    "jump_pulse": "fb8344fe51794162b007ad71f65df381",
+    "quick_tap": "4f0dd85b9b1f4e4db60301c1de01386c"
+  },
+  "graphics": {
+    "runtime": "ComfyUI local stock nodes",
+    "checkpoint": "sd_xl_base_1.0.safetensors",
+    "seed": 1234,
+    "dimensions": [
+      1024,
+      576
+    ],
+    "sha256": "03d88ce2e6c3ea2f2060842a0d9539915d6bb5eeb3da33e9b721bc4fa08734b4",
+    "graph_sha256": "ba08cda63a12e7fe50aaf7233b17f6802d60e77dba14758db06375aa502e968e",
+    "prompt_id": "68f4fd7f-05f1-4731-985a-a82249333b7d"
+  },
+  "verification": {
+    "original_tests": 7,
+    "aggregate_command": "node tests/run_all.cjs",
+    "aggregate_passed": true,
+    "logic_playthroughs": [
+      {
+        "seed": 1,
+        "status": "won",
+        "levels": 4,
+        "lives": 3
+      },
+      {
+        "seed": 2,
+        "status": "won",
+        "levels": 4,
+        "lives": 3
+      },
+      {
+        "seed": 3,
+        "status": "won",
+        "levels": 4,
+        "lives": 3
+      }
+    ],
+    "keyboard_handler_playthrough": {
+      "status": "won",
+      "levels": 4,
+      "lives": 3,
+      "frames": 2604,
+      "environment": "DOM/Canvas simulation loading actual browser scripts"
+    },
+    "live_browser": [
+      "background",
+      "HUD",
+      "start and Enter restart",
+      "horizontal movement",
+      "short Space jump",
+      "barrels",
+      "no console errors"
+    ],
+    "vscode": "C launcher, trusted game workspace, CodeStudio sidebar and full test command observed passing"
+  },
+  "limits": [
+    "No automatic resume after process interruption",
+    "No claim of live integration into HaloMonsterAI/BizDrive",
+    "Research/tools beyond implemented local adapters remain separate",
+    "Small original arcade example, not a full commercial game"
+  ],
+  "installed_model_files": {
+    "index.html": "17d271da144a6c893ae50b2aae9582bb5b88c46d82411697ed40e17989e69972",
+    "style.css": "4977f8c1eaf3beb7bb78b1e2dd88a794dd36614814b34ea6d4d116b4f924661c",
+    "levels.js": "92bbc99384570e1fc64c8f2061d238bc65a116dcdafbaaa3669cabbf405983f9",
+    "physics.js": "bc5b81f5c318e2d75a28c67114ce36aecfb31ca6e72cc63329cd1ab8a5f26e9c",
+    "game.js": "8f4bda8869b486c4c0617e63f178902ee142fe3f64e3fbf59e59c46a002f2b28",
+    "renderer.js": "3b8c0cce0ba4c7593007188327f1572e8ff3bbcf6048bfba31f8b57a1765cdfd",
+    "main.js": "337b5ca3d14189a1cffbf854b20f827c24069052eb9346fd7a95dcfbe3566033",
+    "assets/jungle.png": "03d88ce2e6c3ea2f2060842a0d9539915d6bb5eeb3da33e9b721bc4fa08734b4"
+  },
+  "repository_normalization": "Repository text files use LF and remove trailing spaces only; installed model-emitted game files remain byte-identical to their run receipts. No game logic was hand-edited."
+}

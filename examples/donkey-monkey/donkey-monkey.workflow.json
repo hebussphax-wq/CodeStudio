@@ -1,0 +1,230 @@
+{
+  "task": "# Donkey Monkey\n\nAuftrag: Ein vollständiges, lokal spielbares Jump-and-Run mit vier unterschiedlichen Levels, eigener Affenfigur, Plattformen, Leitern, Bananen und rollenden Hindernissen. Visuell an klassische Arcade-Plattformspiele angelehnt, mit eigenem Namen und eigenen Zeichnungen.\n\nBedienung: Pfeiltasten links/rechts laufen, rauf/runter Leitern klettern; Leertaste springen. Start-/Neustartknopf und Enter. Vier Levels nacheinander, Leben, Punkte, Game-over und Gewinnbildschirm. Keine externen Ressourcen oder Pakete.\n\n## Dateien und prüfbarer Vertrag\n\n- index.html, style.css: Startbild, responsive Canvas (interne Auflösung 960x540), HUD, gut lesbare Steuerungshilfe und Neustart.\n- game.js: ausschließlich Spiellogik, gleichermaßen im Browser als window.DonkeyMonkey und in Node als module.exports verfügbar. Ohne DOM-Zugriff beim Laden in Node.\n- main.js: Canvas-Zeichnung, Tastatur und requestAnimationFrame; lädt game.js zuerst. Figuren, Fässer, Bananen und Plattformen als eigene Canvas-Zeichnungen. Der lokal mit ComfyUI erzeugte Hintergrund assets/jungle.png darf genutzt werden.\n\ngame.js exportiert {levels, createGame, update}. levels enthält genau vier eigene Layouts. Jedes Level: {name,start:{x,y},exit:{x,y,w,h},platforms:[{x,y,w,h}],ladders:[{x,y,w,h}],bananas:[{x,y}]}. Mindestens vier Plattformen und drei Leitern pro Level, erreichbar verbundener Weg vom Start zum Ausgang. Plattformen bleiben stationär.\n\ncreateGame(levelIndex=0) liefert einen neuen Zustand mit levelIndex, x,y,vx,vy,onGround,lives (3),score,status ('playing'),barrels ([]),bananas (Kopie der Level-Bananen). Spielergröße 24x32, x/y linke obere Ecke, y wächst nach unten. update(game,input,dt) verändert diesen Zustand; dt ist in Sekunden, im Betrieb 1/60. input hat boolesche Felder left,right,up,down,jump. Sprung nur am Boden, Schwerkraft, Landekollision, horizontale Grenzen, Klettern an Leitern; beim Klettern keine Schwerkraft. Hindernisse rollen sichtbar und verursachen Lebensverlust. Bananen erhöhen die Punkte. Ausgang wechselt zum nächsten Level; Ausgang im vierten Level setzt status='won'. Fall unter Bildschirm oder Fasskontakt reduziert Leben und setzt Position zurück; bei null Leben status='gameover'. Erzeuge Fässer periodisch von oben. Begrenze dt gegen Sprünge nach inaktiven Tabs.\n\nBediene genau diese Schnittstelle für die Prüfungen; ergänzende Zustandsfelder sind erlaubt. tests/test_game.cjs ist bereits vorhandene Akzeptanzprüfung und darf nicht geändert werden. Die Implementierung muss die Prüfungen bestehen UND im Browser tatsächlich spielbar sein. Tests und QC laufen automatisch nach den Implementierungsschritten. Nicht nur die Tests als Spiel implementieren.\n\nHistorische Arbeitsschritte (durch den folgenden Modulvertrag ersetzt): (1) komplette Spiellogik mit vier Leveldaten in game.js, (2) Browseroberfläche und Canvas-Darstellung in index.html/style.css/main.js, (3) Spielablauf und Erreichbarkeit prüfen/verbessern. Keine separaten Plan-Schritte nur zum Testen; das erledigt der Harness.\n\n## Aktueller Modulvertrag\n\nZusätzliche kleine Module sind ausdrücklich erlaubt: levels.js exportiert CommonJS {levels} und window.DMLevels; physics.js exportiert {movePlayer} und window.DMPhysics; renderer.js exportiert {draw} und window.DMRenderer. game.js behält unverändert die oben beschriebene öffentliche API. Browser-Script-Reihenfolge: levels.js, physics.js, game.js, renderer.js, main.js. main.js nutzt Canvas id=game, Button id=start, HUD id=hud. Alle lokalen Ressourcen müssen offline funktionieren. Der Spielcode wird vom lokalen CodeStudio-Modell erzeugt. Tests und Schnittstellen werden vor diesem Lauf festgelegt.\n",
+  "workflow": {
+    "schema": "codestudio.modules.v1",
+    "modules": [
+      {
+        "id": "level-layouts",
+        "files": [
+          "levels.js"
+        ],
+        "references": [
+          "tests/test_modules.cjs"
+        ],
+        "tests": [
+          0
+        ],
+        "contract": "Create complete levels.js only. CommonJS module.exports={levels}, browser window.DMLevels={levels}. Exactly 4 distinct jungle-themed level layouts for 960x540. levels each have name,start{x,y},exit{x,y,w,h},platforms>=4 rects,ladders>=3 rects,bananas nonempty points. Player24x32. Make four horizontal tiers around y=500,390,280,170 and ladders CONNECTING tier surfaces; ladder top y equals upper surface, bottom equals lower. Ensure platforms cover ladder x. Every level has a connected route from start standing on bottom platform (start.y=bottom.y-32) to exit on highest platform. Make levels distinct by platform x,width and ladder x; all reachable. Ladder width32-40. Exit32x48 standing on top platform. Keep start safe far from hazards. This module is DATA ONLY; do not implement game or DOM. Keep the implementation compact using an indexed factory for four names. Exact design guidance: bottom platform x0,y500,w960,h18; three upper tiers y390,280,170 each x=20+10*i,w=920-20*i,h18 for level i=0..3. Start x50,y468. Exit x780,y122,w32,h48. Three ladders connect surfaces: x120+20*i,y390,w36,h110; x740-20*i,y280,w36,h110; x150+20*i,y170,w36,h110. Use bananas above reachable platforms. These four varying widths satisfy distinctness. Guard environment exports: never access window unless typeof window is not undefined, and never access module unless typeof module is not undefined. Both exports must be OBJECTS containing levels, not the array directly.",
+        "depends_on": []
+      },
+      {
+        "id": "player-physics",
+        "files": [
+          "physics.js"
+        ],
+        "references": [
+          "tests/test_modules.cjs",
+          "tests/test_physics_boundaries.cjs"
+        ],
+        "tests": [
+          0,
+          1,
+          7
+        ],
+        "contract": "Implement physics.js only: CommonJS module.exports={movePlayer}, browser window.DMPhysics={movePlayer}. movePlayer(g,level,input,dt) MUTATES x,y,vx,vy,onGround of 24x32 player. level platforms and ladders arrays rectangles. dtseconds bounded<=0.05. left/right move at180px/s: must integrate vx into x and clamp x0..936. Gravity900, jump upward velocity -360 only onGround. Land only when descending across a platform top (previous feet<=platform.y and new feet>=platform.y with horizontal overlap), then set y=platform.y-32,vy=0,onGround=true. Standing at surface counts grounded; jump must not be cancelled by landing. Up/down while overlapping ladder climb130px/s with gravity disabled, can cross platform surfaces upwards, and reach top with player feet at top surface; down can leave top platform into ladder. At neutral supported ground do not fall. IMPORTANT no clamp y to540: y>540 is a fall handled by game.js. Handle missing input flags as false. No lives, bananas, barrels, DOM in this module. For dual Node/browser modules guard window/module access by typeof; do not reference undefined browser globals on Node. Fix the demonstrated boundary defect in existing code: a player with feet exactly at ladder.y standing on the top platform must be able to descend with down. Strict g.y+playerH>ladder.y excludes touching feet. Recognize ladder entry at its top when down is held; active climbing must not be snapped back onto the same platform. Keep all existing movement/jump/landing behavior and tests.",
+        "depends_on": [
+          "level-layouts"
+        ]
+      },
+      {
+        "id": "game-rules",
+        "files": [
+          "game.js"
+        ],
+        "references": [
+          "levels.js",
+          "physics.js",
+          "tests/test_game.cjs"
+        ],
+        "tests": [
+          2
+        ],
+        "contract": "Implement game.js complete rules, using existing modules: Node require(\"./levels.js\").levels and require(\"./physics.js\").movePlayer; browser window.DMLevels.levels and window.DMPhysics.movePlayer. Export CommonJS module.exports={levels,createGame,update} and browser window.DonkeyMonkey same API. No DOM access on Node. createGame(i=0):levelIndex i,x/y start,vx/vy0,onGround true,lives3,score0,status playing,barrels[],independent deep copy bananas. update mutates game; dt seconds clamp. First handle already-out-of-bounds y>600 loss of exactly one life and safe respawn; zero life->gameover. Exit overlap must progress immediately to next level or fourth->won; preserve lives/score through transition. Call movePlayer. Banana overlap player rect ->score+100 and remove banana. Spawn barrels every2seconds from top platform near one edge; roll at90px/s, gravity, land on platforms and drop at ends; remove offscreen. Collision with barrel costs life, respawns with short invulnerability and clears hazards. Do NOT kill an idle player before6seconds: start safe and barrels begin far from start. After physics handle fall and exits. Status won/gameover ignores further movement. Use own finite time fields. Do not implement only tests: real reachable four-level play, hazards and progression required. Do not modify levels or physics. For dual Node/browser modules guard window/module access by typeof; do not reference undefined browser globals on Node. Existing code incorrectly waits SAFE_START_TIME=6 before spawning; this leaves no barrels at the six-second check. Spawn every2seconds starting at2seconds, while ensuring the initial player is safe from collision during the initial6seconds. A safe start is not a six-second delay of hazard generation. All six logic tests must run here; Browser test runs only after the final browser module.",
+        "depends_on": [
+          "player-physics"
+        ]
+      },
+      {
+        "id": "style",
+        "files": [
+          "style.css"
+        ],
+        "references": [],
+        "tests": [
+          3
+        ],
+        "contract": "Create style.css for polished original Donkey Monkey browser arcade. Deep navy/teal background, warm gold highlights, readable system sans fonts, centered max-width1100px game card, generous spacing, gold rounded start button, responsive canvas width100% max-width960px, aspect-ratio16/9, internal size960x540, border/shadow; header, #hud, #start, #game, .controls selectors. Body margin0 and no horizontal overflow, accessible contrast, keyboard focus visible. Support small screens. No remote resources. For dual Node/browser modules guard window/module access by typeof; do not reference undefined browser globals on Node.",
+        "depends_on": [
+          "game-rules"
+        ]
+      },
+      {
+        "id": "html",
+        "files": [
+          "index.html"
+        ],
+        "references": [
+          "style.css"
+        ],
+        "tests": [
+          4
+        ],
+        "contract": "Create complete accessible offline index.html, title Donkey Monkey, lang de, viewport. Link local style.css. Header Donkey Monkey and subtitle Dschungel-Arcade. HUD div id=hud, canvas id=game width960 height540 with fallback description, button id=start labeled Start / Neustart, readable controls Pfeile links/rechts laufen, hoch/runter Leitern, Leertaste springen, Enter starten. All scripts local at endbody in exact order levels.js,physics.js,game.js,renderer.js,main.js. No inline scripts, no external dependencies, no placeholder text. Footer vier Levels, eigene Spielwelt. For dual Node/browser modules guard window/module access by typeof; do not reference undefined browser globals on Node.",
+        "depends_on": [
+          "style"
+        ]
+      },
+      {
+        "id": "renderer",
+        "files": [
+          "renderer.js"
+        ],
+        "references": [
+          "levels.js",
+          "game.js",
+          "tests/test_modules.cjs"
+        ],
+        "tests": [
+          5
+        ],
+        "contract": "Implement renderer.js only. Export {draw} as CommonJS module.exports and browser window.DMRenderer. draw(ctx,g,api,background,now) draws960x540; api.levels is level list, g game state or null for title. background HTMLImageElement optional and may null; if loaded naturalWidth>0 draw fullcanvas background then translucent navy overlay. Otherwise gradient jungle background. Draw all current level platforms wood/stone with edge highlights, ladders rails+rungs, bananas as yellow crescents, barrels round brown with metal bands, friendly original monkey at g.x/y within24x32 (body/head/ears/face/tail/feet), larger friendly monkey near top, exit glowing gold with flag. Vary tint by levelIndex. draw text title/start overlay when !g, won/gameover overlay when status; readable gold/white captions. Basic Canvas2D APIs only; no DOM calls and no requestAnimationFrame. Keep pure drawing: never mutate game state. Use save/restore sensibly. assets/jungle.png is background handled by main. No external graphics. For dual Node/browser modules guard window/module access by typeof; do not reference undefined browser globals on Node.",
+        "depends_on": [
+          "html"
+        ]
+      },
+      {
+        "id": "browser-loop",
+        "files": [
+          "main.js"
+        ],
+        "references": [
+          "index.html",
+          "game.js",
+          "renderer.js",
+          "tests/test_browser_wiring.cjs",
+          "tests/test_game.cjs",
+          "physics.js",
+          "levels.js",
+          "tests/test_keyboard_playthrough.cjs"
+        ],
+        "tests": [
+          6,
+          9,
+          10
+        ],
+        "contract": "Implement complete main.js browser wiring only. window.DonkeyMonkey API and window.DMRenderer.draw. Canvas#game960x540, button#start, HUD#hud. Initially title via draw(ctx,null,api,bg,time). Button or Enter start/restart createGame(0). Maintain keyboard pressed ArrowLeft ArrowRight ArrowUp ArrowDown Space (event.code, preventDefault for these); pass booleans left,right,up,down,jump; jump only on new press to avoid automatic bunnyhop. Clear keys on blur. requestAnimationFrame bounded elapsed dt<=0.05: update only whileplaying then draw eachframe. Load local assets/jungle.png Image and use ifready, fallback works. HUD always lives,score,level number and levelname; statuswon/gameover clear German instruction Enter für Neustart. Do not pause game merely canvasnotfocused; keyboard after button start works. No external dependencies. Expose window.donkeyMonkeyState=current game for debugging after each restart (ordinary diagnostics). Keep HTML IDs identical and call draw signature(ctx,g,api,bg,time). For dual Node/browser modules guard window/module access by typeof; do not reference undefined browser globals on Node.",
+        "depends_on": [
+          "renderer"
+        ]
+      }
+    ]
+  },
+  "test_profiles": [
+    {
+      "name": "levels",
+      "argv": [
+        "node",
+        "tests/test_modules.cjs",
+        "levels"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "physics",
+      "argv": [
+        "node",
+        "tests/test_modules.cjs",
+        "physics"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "logic",
+      "argv": [
+        "node",
+        "--test",
+        "--test-skip-pattern=Browser",
+        "tests/test_game.cjs"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "style",
+      "argv": [
+        "node",
+        "tests/test_modules.cjs",
+        "style"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "html",
+      "argv": [
+        "node",
+        "tests/test_modules.cjs",
+        "html"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "renderer",
+      "argv": [
+        "node",
+        "tests/test_modules.cjs",
+        "renderer"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "full",
+      "argv": [
+        "node",
+        "--test",
+        "tests/test_game.cjs"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "physics-boundaries",
+      "argv": [
+        "node",
+        "tests/test_physics_boundaries.cjs"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "hazards",
+      "argv": [
+        "node",
+        "tests/test_hazards.cjs"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "browser-wiring",
+      "argv": [
+        "node",
+        "tests/test_browser_wiring.cjs"
+      ],
+      "timeout_sec": 30
+    },
+    {
+      "name": "keyboard-playthrough",
+      "argv": [
+        "node",
+        "tests/test_keyboard_playthrough.cjs"
+      ],
+      "timeout_sec": 30
+    }
+  ]
+}

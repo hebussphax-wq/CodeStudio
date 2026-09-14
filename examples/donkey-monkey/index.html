@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Donkey Monkey</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="game-card">
+        <header>
+            <h1>Donkey Monkey</h1>
+            <p>Dschungel-Arcade</p>
+        </header>
+
+        <div id="hud">
+            <span id="score">Punkte: 0</span>
+            <span id="level">Level: 1</span>
+        </div>
+
+        <div id="game-container">
+            <canvas id="game" width="960" height="540" role="img" aria-label="Spielfeld für Donkey Monkey">
+                Ein Canvas-basiertes Arcade-Spiel. Bitte aktivieren Sie JavaScript und nutzen Sie einen modernen Browser.
+            </canvas>
+        </div>
+
+        <button id="start" class="btn-gold">Start / Neustart</button>
+
+        <section class="controls" aria-label="Steuerungshilfe">
+            <p>Pfeile links/rechts: Laufen &nbsp;|&nbsp; hoch/runter: Leitern &nbsp;|&nbsp; Leertaste: Springen &nbsp;|&nbsp; Enter: Starten</p>
+        </section>
+
+        <footer>
+            <p>Vier Levels, eigene Spielwelt.</p>
+        </footer>
+    </main>
+
+    <script src="levels.js"></script>
+    <script src="physics.js"></script>
+    <script src="game.js"></script>
+    <script src="renderer.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>
