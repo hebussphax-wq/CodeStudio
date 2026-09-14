@@ -522,7 +522,7 @@ class CodeStudioCore:
                 receipt['rounds'].append({'round': rnd, 'status': 'no_progress', 'candidate_sha256': candidate_hash})
                 break
             self.log("Reviewer arbeitet …")
-            review = self.chat("reviewer", f"AUFGABE:\n{task}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nUNIFIED DIFF:\n{diff}" + reference_prompt, model)
+            review = ({"verdict":"ok", "issues":[], "summary":"Modulvorschlag validiert; Tests und Modell-QC folgen vor Modulabschluss."} if contract else self.chat("reviewer", f"AUFGABE:\n{task}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nUNIFIED DIFF:\n{diff}" + reference_prompt, model))
             receipt["rounds"].append({"round": rnd, "review": review, "candidate_sha256": candidate_hash})
             if review.get("verdict") == "ok":
                 receipt["status"] = "proposed"

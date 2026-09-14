@@ -341,6 +341,11 @@ class AutonomousRun:
                 try:
                     result,test=self.proposal(task)
                     if test.get('returncode')==0:
+                        context={p:result.final_state[p] for p in result.final_state}
+                        review=self.core.chat('reviewer','Prüfe ausschließlich diesen Modulvertrag. Die echten kumulativen Tests wurden bereits ausgeführt. Keine hypothetischen Testfehler erfinden.\nVERTRAG:\n'+module['contract']+'\nDATEIEN:\n'+json.dumps(context,ensure_ascii=False)+'\nECHTE TESTERGEBNISSE:\n'+test.get('output',''),self.model)
+                        self.receipt['attempts'][-1]['module_review']=review
+                        self.unchanged();self.core.checkpoint()
+                        if review.get('verdict')!='ok': raise ProposalRejected(redact(json.dumps(review)))
                         self.receipt['steps'].append({'number':number,'id':module['id'],
                             'status':'verified','proposal_id':result.receipt['tag'],
                             'tests':checked[:], 'after':{p:self.expected[p] for p in module['files'] if p in self.expected}})

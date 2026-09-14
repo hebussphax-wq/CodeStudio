@@ -20,21 +20,21 @@ class ModuleTests(unittest.TestCase):
   self.events=[]
   return AutonomousRun(self.root,self.config,{'run_id':uuid.uuid4().hex,'approved':True,'task':'a=2 b=3','model':'default','workflow':self.workflow,'limits':{'repairs':repairs}},self.events.append)
  def test_module_repairs_before_next_and_routes_roles(self):
-  calls=[]; replies=iter([change('a=1\nb=0\n'),OK,change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,OK])
+  calls=[]; replies=iter([change('a=1\nb=0\n'),change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,OK])
   def chat(role,prompt,model):calls.append((role,prompt,model));return next(replies)
   run=self.run_new()
   with patch.object(CodeStudioCore,'chat',side_effect=chat): result=run.execute()['receipt']
   self.assertEqual(result['status'],'succeeded')
   self.assertEqual([x['module_id'] for x in result['attempts']],['a','a','b'])
   self.assertEqual([x['test']['returncode'] for x in result['attempts']],[1,0,0])
-  self.assertEqual([x[2] for x in calls],['small','review','small','review','default','default','default'])
-  self.assertIn('a must equal 2',calls[2][1]);self.assertNotIn('test_b.py',calls[0][1])
+  self.assertEqual([x[2] for x in calls],['small','small','review','default','default','default'])
+  self.assertIn('a must equal 2',calls[1][1]);self.assertNotIn('test_b.py',calls[0][1])
   self.assertEqual(self.events[-1]['status'],'succeeded')
   self.assertEqual(result['updated_at'],result['finished_at'])
  def test_failed_module_blocks_next_and_rolls_back(self):
   run=self.run_new(0)
   with patch.object(CodeStudioCore,'chat',side_effect=[change('a=1\nb=0\n'),OK]) as chat: result=run.execute()['receipt']
-  self.assertEqual(chat.call_count,2);self.assertEqual(result['status'],'budget_exhausted')
+  self.assertEqual(chat.call_count,1);self.assertEqual(result['status'],'budget_exhausted')
   self.assertTrue(result['rollback_verified']);self.assertEqual(result['steps'],[])
   self.assertEqual((self.root/'calc.py').read_text(),'a=0\nb=0\n')
   self.assertEqual(self.events[-1]['status'],'budget_exhausted')
