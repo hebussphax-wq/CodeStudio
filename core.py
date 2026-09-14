@@ -170,18 +170,30 @@ class CodeStudioCore:
             return {'type':'object','properties':{'edits':{'type':'array','minItems':1,'maxItems':4,
                 'items':{'type':'object','properties':{'path':{'type':'string'},'op':{'type':'string','enum':['create','write','delete']},'content':{'type':'string'}},'required':['path','op','content'],'additionalProperties':False}},'notes':{'type':'string','maxLength':300}},'required':['edits','notes'],'additionalProperties':False}
         if role == 'reviewer' and getattr(self,'module_mode',False):
-            return {'type':'object','properties':{'observations':{'type':'string','maxLength':1600},'issues':SCHEMA['reviewer']['properties']['issues'],'verdict':SCHEMA['reviewer']['properties']['verdict'],'summary':SCHEMA['reviewer']['properties']['summary']},'required':['observations','issues','verdict','summary'],'additionalProperties':False}
+            return {'type':'object','properties':{'observations':{'type':'string','maxLength':1600},'defects':SCHEMA['reviewer']['properties']['issues'],'verdict':SCHEMA['reviewer']['properties']['verdict'],'summary':SCHEMA['reviewer']['properties']['summary']},'required':['observations','defects','verdict','summary'],'additionalProperties':False}
         return SCHEMA[role]
+
+    def validate_chat_result(self,role,obj):
+        if role=='reviewer' and getattr(self,'module_mode',False):
+            defects=obj.get('defects')
+            valid=(obj.get('verdict') in ('ok','reject') and isinstance(defects,list) and len(defects)<=4
+                   and all(isinstance(x,str) and len(x)<=400 for x in defects)
+                   and isinstance(obj.get('observations'),str) and len(obj['observations'])<=1600
+                   and isinstance(obj.get('summary'),str) and len(obj['summary'])<=500
+                   and ((obj['verdict']=='ok' and not defects) or (obj['verdict']=='reject' and bool(defects))))
+            if not valid: raise ValueError('Widersprüchliches oder ungültiges Modul-QC-Objekt.')
+            obj['issues']=obj.pop('defects')
+        return obj
 
     def chat(self, role: str, user: str, model: str) -> dict:
         effective_system = "Implement ONLY the bounded module contract. Return JSON edits with exactly path, op (create/write/delete), content (complete source). No old_text or new_text, no duplicate code, no shell commands. Keep implementation concise and complete." if role == 'coder' and getattr(self,'module_mode',False) else SYSTEM[role]
-        if role == 'reviewer' and getattr(self,'module_mode',False): effective_system = "You are a software reviewer. First compute what the source actually does, including functions called by factories. Then compare this behavior with the explicit contract. Return JSON in this order: observations (short factual explanation), issues (only demonstrated contract violations, empty array when none), verdict (ok or reject), summary. A passing test alone does not prove correctness. Never invent a missing value when the code computes it. Approve when the contract is fulfilled."
+        if role == 'reviewer' and getattr(self,'module_mode',False): effective_system = "You are a software reviewer. First compute what the source actually does, including functions called by factories. Then compare this behavior with the explicit contract. Return JSON in this order: observations (short factual explanation), defects (only demonstrated contract violations, empty array when none), verdict (ok or reject), summary. A passing test alone does not prove correctness. Never invent a missing value when the code computes it. Approve when the contract is fulfilled. The defects array contains only broken behavior; passing checks belong in observations, never defects."
         if self.transport is not None:
             result = self.transport('chat', {'role': role, 'model': model, 'system': effective_system,
                 'messages': [{'role': 'user', 'content': user}], 'schema': self.output_schema(role)})
             if not isinstance(result, dict):
                 raise ValueError('Host lieferte kein strukturiertes Modellobjekt.')
-            return result
+            return self.validate_chat_result(role,result)
         fmt: Any = self.output_schema(role) if self.config.get("structured_output", True) else "json"
         body = {
             "model": model,
@@ -206,7 +218,7 @@ class CodeStudioCore:
             try:
                 obj = json.loads(raw)
                 if isinstance(obj, dict):
-                    return obj
+                    return self.validate_chat_result(role,obj)
             except json.JSONDecodeError:
                 pass
             if attempt == 1:

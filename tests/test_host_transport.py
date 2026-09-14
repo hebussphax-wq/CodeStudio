@@ -54,7 +54,7 @@ class HostTests(unittest.TestCase):
     def test_module_review_requests_facts_before_verdict(self):
         with tempfile.TemporaryDirectory() as folder:
             calls=[]
-            core=CodeStudioCore(pathlib.Path(folder),{'workspace':folder},transport=lambda _,p:(calls.append(p) or {'verdict':'ok','issues':[],'summary':'ok'}));core.module_mode=True
+            core=CodeStudioCore(pathlib.Path(folder),{'workspace':folder},transport=lambda _,p:(calls.append(p) or {'verdict':'ok','defects':[],'observations':'facts','summary':'ok'}));core.module_mode=True
             core.chat('reviewer','contract and sources','bound')
             self.assertIn('First compute what the source actually does',calls[0]['system'])
             self.assertEqual(next(iter(calls[0]['schema']['properties'])),'observations')

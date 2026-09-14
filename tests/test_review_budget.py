@@ -1,3 +1,4 @@
+import json
 import pathlib,tempfile,unittest
 from unittest.mock import patch
 from core import CodeStudioCore,SCHEMA
@@ -19,3 +20,11 @@ class ReviewBudgetTests(unittest.TestCase):
    self.assertEqual(set(item['required']),{'path','op','content'})
    self.assertNotIn('old_text',item['properties']);self.assertFalse(item['additionalProperties'])
    core.module_mode=False;self.assertIn('old_text',core.output_schema('coder')['properties']['edits']['items']['properties'])
+
+class GroundedReviewValidation(unittest.TestCase):
+ def test_contradictory_module_verdict_is_rejected(self):
+  with tempfile.TemporaryDirectory() as folder:
+   core=CodeStudioCore(pathlib.Path(folder),{'workspace':folder,'ollama_url':'http://127.0.0.1:11439'});core.module_mode=True
+   for obj in [{'observations':'facts','defects':['broken behavior'],'verdict':'ok','summary':'ok'},{'observations':'facts','defects':[],'verdict':'reject','summary':'bad'}]:
+    with patch.object(core,'ollama_request',return_value={'message':{'content':json.dumps(obj)}}):
+     with self.assertRaisesRegex(ValueError,'QC-Objekt'):core.chat('reviewer','source','model')
