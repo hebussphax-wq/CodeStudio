@@ -64,3 +64,23 @@ python studio.py "Aufgabe" --model qwen2.5-coder:14b
 - **Test-Reparatur:** bei rotem `test_command` eine Coder/Reviewer-Runde.
 - **Rollback:** bei endgültig roten Tests Restore aus dem ersten Backup.
 - **Git-Branch pro Auftrag:** optional `git_branch_per_task`.
+
+## Troubleshooting
+
+- **Ollama down / nicht erreichbar:** Prüfe, ob der Ollama-Dienst läuft (`ollama list`). Danach `python studio.py --doctor`. Firewall und Proxy nicht auf den lokalen Ollama-Port blockieren.
+- **VRAM zu knapp / Modell lädt nicht:** Kleineres Modell wählen (`setup.ps1 -VramGB …` oder `--model …`). Nur ein Modell gleichzeitig laden (`OLLAMA_MAX_LOADED_MODELS=1`).
+- **num_ctx / Kontextfenster:** Zu großes `num_ctx` frisst VRAM. Werte aus der Hardware-Tabelle nutzen; bei Abbrüchen `num_ctx` in `config.json` senken.
+
+## Receipts
+
+Jeder Lauf schreibt Belege unter `runs/` (JSON/Logs je Auftrag). Dort stehen u. a. Scout-Treffer, Review-Runden, angewendete Dateien und Testergebnis — zum Nachvollziehen, nicht als automatisches Ready.
+
+## Sicherheitsgrenzen
+
+- Die KI darf **keinen Shell-Befehl** ausführen.
+- Schreiben nur im gewählten Workspace, und erst nach angezeigtem Unified Diff, Freigabe und datebezogenem Backup.
+- `test_command` kommt ausschließlich aus deiner `config.json`.
+
+## Bekannte Punkte
+
+- `git_branch_per_task`: wenn aktiv, wechselt das Studio pro Auftrag auf einen eigenen Git-Branch (Arbeitsverzeichnis bleibt der Workspace, der Branch ändert sich).
