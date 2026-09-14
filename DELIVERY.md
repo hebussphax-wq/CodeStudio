@@ -5,7 +5,8 @@ TobyKi-Unterbaum bei `b7270bb3ef8133319b2161af8a06981f2e721e56`.
 TobyKi enthält diesen unveränderten Unterbaum auch bei
 `600ca50c7cac217c5af5f65e441ad2fa55ad3d67`, ergänzt um seine Host-Modellprüfung.
 Dieses Repository ergänzt Lieferhinweise, einen Setup-Hinweis und definierte
-Zeilenenden. Lizenz und JSON-Konfiguration unterscheiden sich ausschließlich
+Zeilenenden; eigene Dateien im Beispielarbeitsbereich bleiben von Git ausgeschlossen.
+Lizenz und JSON-Konfiguration unterscheiden sich ausschließlich
 durch die Entfernung einer zusätzlichen Leerzeile am Dateiende.
 
 Verifiziert am 14. September 2026 unter Windows:

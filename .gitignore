@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 runs/
 backups/
+workspace/*
+!workspace/.gitkeep
+!workspace/README.md
