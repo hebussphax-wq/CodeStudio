@@ -90,3 +90,15 @@ class ModuleTests(unittest.TestCase):
   with patch.object(CodeStudioCore,'chat',side_effect=[change('a=2\nb=0\n'),reject,reject]):result=run.execute()['receipt']
   self.assertEqual(result['status'],'budget_exhausted')
   self.assertTrue(result['rollback_verified']);self.assertEqual(result['steps'],[])
+
+ def test_module_coder_receives_readable_source_and_single_contract(self):
+  run=self.run_new();prompts=[]
+  replies=iter([change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,OK])
+  def chat(role,prompt,model):
+   if role=='coder':prompts.append(prompt.replace('\r\n','\n'))
+   return next(replies)
+  with patch.object(CodeStudioCore,'chat',side_effect=chat):result=run.execute()['receipt']
+  self.assertEqual(result['status'],'succeeded')
+  self.assertIn('DATEI calc.py\na=0\nb=0',prompts[0])
+  self.assertIn('DATEI test_a.py\nfrom calc import a',prompts[0])
+  self.assertEqual(prompts[0].count('a=2'),1)

@@ -507,7 +507,14 @@ class CodeStudioCore:
         for rnd in range(1, max_rounds + 2):
             self.log(f"Coder Runde {rnd} …")
             prompt = f"AUFGABE:\n{task}\n\nPLAN:\n{json.dumps(plan.get('plan', []), ensure_ascii=False)}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nDATEIEN:\n{json.dumps(ctx, ensure_ascii=False)}"
-            prompt += reference_prompt
+            if contract:
+                # One task, readable source, explicit immutable references. Avoid
+                # burying repair diagnostics in three duplicated contracts and escaped JSON.
+                prompt='AUFGABE UND AKTUELLE DIAGNOSE:\n'+task
+                prompt+='\n\nBEARBEITBARE DATEIEN:\n'+'\n\n'.join('DATEI '+p+'\n'+(text if text is not None else '[new file]') for p,text in ctx.items())
+                prompt+='\n\nREAD-ONLY REFERENZEN (keine Schreibrechte):\n'+'\n\n'.join('DATEI '+p+'\n'+text for p,text in references.items())
+            else:
+                prompt += reference_prompt
             if feedback:
                 prompt += "\n\nBEANSTANDUNGEN:\n" + feedback
             code = self.chat("coder", prompt, model)
