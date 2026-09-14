@@ -10,6 +10,7 @@ import time
 import uuid
 from core import CodeStudioCore, truncate, SCHEMA
 from workflow import normalize_job, job_result
+from moduleflow import normalize_workflow
 from processrunner import run_command, ProcessTreeUncertain
 from safety import WorkspaceTransaction, atomic_bytes, canonical, digest, identity, relative, redact, ensure_source_text
 
@@ -30,6 +31,7 @@ class AutonomousCore(CodeStudioCore):
 
     def chat(self, role, user, model):
         self.checkpoint()
+        model = getattr(self, 'role_models', {}).get(role, model)
         if self.model_calls >= self.max_model_calls:
             raise RunStopped('budget_exhausted', 'Modellaufruf-Budget erreicht.')
         self.model_calls += 1
@@ -123,6 +125,9 @@ class AutonomousRun:
                 raise ValueError('Direktes Testprogramm statt Batch-Datei einstellen.')
             if type(t.get('timeout_sec',300)) is not int or not 1<=t.get('timeout_sec',300)<=3600:
                 raise ValueError('Ungültiger Test-Timeout.')
+        self.workflow = normalize_workflow(request['workflow'], len(tests), self.limits['steps']) if 'workflow' in request else None
+        self.all_tests = copy.deepcopy(tests)
+        self.module = None
         self.emit = emit
         self.cancel_event = threading.Event()
         self.core = AutonomousCore(root, config, log=lambda msg:emit({'event':'log','text':redact(msg)}), transport=transport)
@@ -138,6 +143,7 @@ class AutonomousRun:
                         'steps':[],'attempts':[],'started_at':time.time(),'actor':request.get('actor','user'),
                         'workflow_id':request.get('workflow_id'), 'tests_sha256':digest(canonical(tests))}
         if self.job: self.receipt['job'] = self.job
+        if self.workflow: self.receipt['workflow'] = self.workflow
         self.protected = {}
         self.expected = {}
         self.latest = {}
@@ -157,7 +163,8 @@ class AutonomousRun:
     def proposal(self, task):
         self.core.checkpoint()
         self.unchanged()
-        try: result = self.core.analyze(task,self.model)
+        try:
+            result = self.core.analyze(task,self.model,self.module) if self.module else self.core.analyze(task,self.model)
         except RunStopped: raise
         except (ValueError,RuntimeError) as exc:
             self.core.checkpoint()
@@ -168,6 +175,8 @@ class AutonomousRun:
         self.unchanged()
         if self.core.transport: self.core.transport('models',{})
         self.core.checkpoint()
+        if self.module and not set(result.final_state).issubset(self.module['files']):
+            raise ValueError('Vorschlag außerhalb des Modulvertrags.')
         if any(rel in self.protected for rel in result.final_state):
             raise ValueError('Vorhandene Testdateien/Testprogramme dürfen nicht automatisch abgeschwächt werden.')
         if len(set(self.tx.files)|set(result.final_state)) > 32:
@@ -185,6 +194,7 @@ class AutonomousRun:
             self.expected[rel] = identity(self.core.workspace,rel)
         attempt = {'proposal_id':result.receipt['tag'],'diff':result.diff,
                    'files':list(result.final_state),'after':{p:self.expected[p] for p in result.final_state}}
+        if self.module: attempt['module_id'] = self.module['id']
         self.receipt['attempts'].append(attempt)
         self.save()  # Durable before any test program starts.
         test = self.core.run_tests()
@@ -216,57 +226,60 @@ class AutonomousRun:
             self.expected = dict(self.protected)
             self.receipt['protected_tests'] = self.protected
             self.save()
-            plan = self.core.chat('planner','AUTONOMER GESAMTAUFTRAG:\n'+self.task+
-                '\nZerlege in maximal '+str(self.limits['steps'])+' zusammenhängende Implementierungsschritte. '
-                'Jeder plan-Eintrag ist ein konkreter Teilauftrag. Keine Schritte nur zum Ausführen von Tests, Review oder Freigeben: das übernimmt die Laufzeit. '
-                'Keine Rückfrage außer fehlenden zwingenden Angaben.\nDATEIBAUM:\n'+'\n'.join(tree), self.model)
-            if plan.get('questions'): raise RunStopped('blocked','Rückfrage: '+redact(str(plan['questions'])))
-            steps = plan.get('plan')
-            if not isinstance(steps,list) or not steps or len(steps)>self.limits['steps'] or not all(isinstance(s,str) and s.strip() for s in steps):
-                raise ValueError('Plan muss nichtleere Schritte innerhalb des Budgets enthalten.')
-            if not isinstance(plan.get('acceptance'),list) or not plan['acceptance']:
-                raise ValueError('Plan benötigt überprüfbare Akzeptanzkriterien.')
-            self.receipt['plan'] = plan
-            self.save()
-            feedback = ''
-            for number, step in enumerate(steps,1):
-                self.core.log('Autonom: Schritt '+str(number)+'/'+str(len(steps))+': '+step)
-                subtask = self.task+'\n\nJETZT NUR DIESEN TEILSCHRITT IMPLEMENTIEREN: '+step+'\nBereits erledigt: '+json.dumps(self.receipt['steps'],ensure_ascii=False)
-                try:
-                    result,test = self.proposal(subtask)
-                    self.receipt['steps'].append({'number':number,'task':step,'proposal_id':result.receipt['tag'],'status':'implemented'})
-                except ProposalRejected as exc:
-                    self.receipt['steps'].append({'number':number,'task':step,'status':'deferred_to_qc','error':str(exc)})
-                    self.core.log('Teilschritt wird durch Gesamtprüfung/Reparatur geklärt: '+str(exc))
+            if self.workflow:
+                self.execute_modules()
+            else:
+                plan = self.core.chat('planner','AUTONOMER GESAMTAUFTRAG:\n'+self.task+
+                    '\nZerlege in maximal '+str(self.limits['steps'])+' zusammenhängende Implementierungsschritte. '
+                    'Jeder plan-Eintrag ist ein konkreter Teilauftrag. Keine Schritte nur zum Ausführen von Tests, Review oder Freigeben: das übernimmt die Laufzeit. '
+                    'Keine Rückfrage außer fehlenden zwingenden Angaben.\nDATEIBAUM:\n'+'\n'.join(tree), self.model)
+                if plan.get('questions'): raise RunStopped('blocked','Rückfrage: '+redact(str(plan['questions'])))
+                steps = plan.get('plan')
+                if not isinstance(steps,list) or not steps or len(steps)>self.limits['steps'] or not all(isinstance(s,str) and s.strip() for s in steps):
+                    raise ValueError('Plan muss nichtleere Schritte innerhalb des Budgets enthalten.')
+                if not isinstance(plan.get('acceptance'),list) or not plan['acceptance']:
+                    raise ValueError('Plan benötigt überprüfbare Akzeptanzkriterien.')
+                self.receipt['plan'] = plan
                 self.save()
-            if not self.latest: self.latest = self.core.run_tests()
-            for repair in range(self.limits['repairs']+1):
-                self.core.checkpoint()
-                self.unchanged()
-                if self.latest.get('returncode') == 0:
-                    context = self.core.read_files(list(self.tx.files))
-                    review = self.core.chat('reviewer','Gesamtergebnis gegen Originalauftrag prüfen. Verbleibende Fehler/Vollständigkeitslücken benennen.\nAUFTRAG:\n'+self.task+
-                        '\nAKZEPTANZ:\n'+json.dumps(plan['acceptance'],ensure_ascii=False)+
-                        '\nAKTUELLE DATEIEN:\n'+json.dumps(context,ensure_ascii=False)+
-                        '\nTESTERGEBNIS:\n'+self.latest['output'],self.model)
-                    self.receipt['final_review'] = review
-                    if review.get('verdict')=='ok':
-                        self.unchanged()
-                        self.core.checkpoint()
-                        self.receipt['status']='succeeded'
-                        break
-                    feedback = redact(json.dumps(review,ensure_ascii=False))
-                else:
-                    feedback = 'Projekttest fehlgeschlagen. Aktuell fehlerhafter Code ist noch im Workspace. Repariere ihn, vorhandene Tests nicht ändern.\n'+self.latest.get('output','')
-                if repair == self.limits['repairs']:
-                    raise RunStopped('budget_exhausted','Reparaturbudget erreicht; Ziel noch nicht verifiziert.')
-                self.core.log('Autonom: Reparatur '+str(repair+1)+'/'+str(self.limits['repairs']))
-                try:
-                    self.proposal(self.task+'\n\nAUTOMATISCHE REPARATUR:\n'+feedback+'\nBisherige Schritte: '+json.dumps(self.receipt['steps'],ensure_ascii=False))
-                except ProposalRejected as exc:
-                    self.receipt.setdefault('repair_errors',[]).append(str(exc))
-                    self.core.log('Reparaturvorschlag ungültig: '+str(exc))
+                feedback = ''
+                for number, step in enumerate(steps,1):
+                    self.core.log('Autonom: Schritt '+str(number)+'/'+str(len(steps))+': '+step)
+                    subtask = self.task+'\n\nJETZT NUR DIESEN TEILSCHRITT IMPLEMENTIEREN: '+step+'\nBereits erledigt: '+json.dumps(self.receipt['steps'],ensure_ascii=False)
+                    try:
+                        result,test = self.proposal(subtask)
+                        self.receipt['steps'].append({'number':number,'task':step,'proposal_id':result.receipt['tag'],'status':'implemented'})
+                    except ProposalRejected as exc:
+                        self.receipt['steps'].append({'number':number,'task':step,'status':'deferred_to_qc','error':str(exc)})
+                        self.core.log('Teilschritt wird durch Gesamtprüfung/Reparatur geklärt: '+str(exc))
                     self.save()
+                if not self.latest: self.latest = self.core.run_tests()
+                for repair in range(self.limits['repairs']+1):
+                    self.core.checkpoint()
+                    self.unchanged()
+                    if self.latest.get('returncode') == 0:
+                        context = self.core.read_files(list(self.tx.files))
+                        review = self.core.chat('reviewer','Gesamtergebnis gegen Originalauftrag prüfen. Verbleibende Fehler/Vollständigkeitslücken benennen.\nAUFTRAG:\n'+self.task+
+                            '\nAKZEPTANZ:\n'+json.dumps(plan['acceptance'],ensure_ascii=False)+
+                            '\nAKTUELLE DATEIEN:\n'+json.dumps(context,ensure_ascii=False)+
+                            '\nTESTERGEBNIS:\n'+self.latest['output'],self.model)
+                        self.receipt['final_review'] = review
+                        if review.get('verdict')=='ok':
+                            self.unchanged()
+                            self.core.checkpoint()
+                            self.receipt['status']='succeeded'
+                            break
+                        feedback = redact(json.dumps(review,ensure_ascii=False))
+                    else:
+                        feedback = 'Projekttest fehlgeschlagen. Aktuell fehlerhafter Code ist noch im Workspace. Repariere ihn, vorhandene Tests nicht ändern.\n'+self.latest.get('output','')
+                    if repair == self.limits['repairs']:
+                        raise RunStopped('budget_exhausted','Reparaturbudget erreicht; Ziel noch nicht verifiziert.')
+                    self.core.log('Autonom: Reparatur '+str(repair+1)+'/'+str(self.limits['repairs']))
+                    try:
+                        self.proposal(self.task+'\n\nAUTOMATISCHE REPARATUR:\n'+feedback+'\nBisherige Schritte: '+json.dumps(self.receipt['steps'],ensure_ascii=False))
+                    except ProposalRejected as exc:
+                        self.receipt.setdefault('repair_errors',[]).append(str(exc))
+                        self.core.log('Reparaturvorschlag ungültig: '+str(exc))
+                        self.save()
             self.receipt['after'] = {p:identity(self.core.workspace,p) for p in self.tx.files}
             self.receipt['test'] = self.latest
             self.receipt['finished_at'] = time.time()
@@ -292,6 +305,7 @@ class AutonomousRun:
             # Cancellation/failure may occur between progress saves.
             self.receipt['model_calls'] = self.core.model_calls
             self.receipt['finished_at']=time.time()
+            self.receipt['updated_at']=self.receipt['finished_at']
             errors=[]
             for target in (self.path,self.tx.root/'effect-receipt.json'):
                 try: atomic_bytes(target,canonical(self.receipt))
@@ -302,6 +316,54 @@ class AutonomousRun:
                 self.receipt['persistence_errors']=errors
                 # Keep ownership marker so another run cannot overwrite uncertain evidence.
             elif not uncertain: self.lock.unlink()
+            self.emit({'event':'autonomous','run_id':self.id,'status':self.receipt['status'],
+                       'completed_steps':len(self.receipt['steps']),'receipt_path':str(self.path)})
         result = {'receipt':self.receipt,'receipt_path':str(self.path)}
         if self.job: result['workflow_result'] = job_result(self.job,self.receipt,str(self.path))
         return result
+
+    def execute_modules(self):
+        """No dependent work begins until its module and all earlier gates pass."""
+        checked=[]
+        for number,module in enumerate(self.workflow['modules'],1):
+            self.core.checkpoint(); self.unchanged()
+            self.module=module
+            self.core.role_models=module['models']
+            checked=list(dict.fromkeys(checked+module['tests']))
+            self.core.config['tests']=[self.all_tests[i] for i in checked]
+            self.receipt['active_module']=module['id']
+            self.save()
+            feedback=''
+            for attempt in range(self.limits['repairs']+1):
+                self.core.log('Modul '+module['id']+' Versuch '+str(attempt+1))
+                task=module['contract']+'\nNur diese Dateien ändern: '+json.dumps(module['files'])
+                if feedback: task+='\nTESTDIAGNOSE (vor nächstem Modul beheben):\n'+feedback
+                try:
+                    result,test=self.proposal(task)
+                    if test.get('returncode')==0:
+                        self.receipt['steps'].append({'number':number,'id':module['id'],
+                            'status':'verified','proposal_id':result.receipt['tag'],
+                            'tests':checked[:], 'after':{p:self.expected[p] for p in module['files'] if p in self.expected}})
+                        self.save(); break
+                    feedback=test.get('output','Test fehlgeschlagen')
+                except ProposalRejected as exc:
+                    feedback=str(exc)
+                self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
+                self.save()
+                if attempt==self.limits['repairs']:
+                    raise RunStopped('budget_exhausted','Modul '+module['id']+' nicht verifiziert; abhängige Schritte nicht gestartet.')
+        self.module=None; self.core.role_models={}
+        self.core.config['tests']=self.all_tests
+        self.latest=self.core.run_tests()
+        self.unchanged(); self.core.checkpoint()
+        if self.latest.get('returncode')!=0:
+            raise RunStopped('failed','Gesamtprüfung fehlgeschlagen; kein Abschluss.')
+        context=self.core.read_files(list(self.tx.files))
+        if self.core.truncated: raise RunStopped('blocked','Gesamtergebnis zu groß für vollständiges Review.')
+        review=self.core.chat('reviewer','Gesamtergebnis gegen ORIGINALAUFTRAG prüfen. Fehlende Funktionen zurückweisen.\n'+self.task+'\nDATEIEN:\n'+json.dumps(context,ensure_ascii=False)+'\nTESTS:\n'+self.latest.get('output',''),self.model)
+        self.receipt['final_review']=review
+        self.unchanged(); self.core.checkpoint()
+        if review.get('verdict')!='ok': raise RunStopped('failed','Gesamt-QC hat den Originalauftrag nicht bestätigt: '+redact(json.dumps(review)))
+        self.receipt['active_module']=None
+        self.receipt['status']='succeeded'
+        self.receipt['completion_basis']='All module contracts reviewed, cumulative gates and complete configured suite passed; external product acceptance remains separate.'

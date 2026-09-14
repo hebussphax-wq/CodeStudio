@@ -75,3 +75,12 @@ class ServiceTests(unittest.TestCase):
         result = self.service.handle({'command': 'test'})
         self.assertEqual(result['returncode'], 3)
         self.assertEqual((self.workspace/'calc.py').read_bytes(), b'value=1\n')
+
+    def test_profile_bundle_is_atomic_and_preserved(self):
+        import sys
+        profiles=[{'name':'unit','argv':[sys.executable,'test_unit.py'],'timeout_sec':20},{'name':'integration','argv':[sys.executable,'test_integration.py']}]
+        self.service.handle({'command':'configure','test_profiles':profiles})
+        self.assertEqual(self.service.core.config['tests'],profiles)
+        before=copy.deepcopy(self.service.core.config)
+        with self.assertRaises(ValueError):self.service.handle({'command':'configure','context_tokens':32768,'test_profiles':[{'argv':'bad'}]})
+        self.assertEqual(self.service.core.config,before)

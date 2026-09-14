@@ -178,9 +178,16 @@ class CodeStudioCore:
             "options": self.config.get("options", {}),
             "messages": [{"role": "system", "content": SYSTEM[role]}, {"role": "user", "content": user}],
         }
+        if 'think' in self.config:
+            body['think'] = self.config['think']
         raw = ""
         for attempt in (1, 2):
-            raw = self.ollama_request("/api/chat", body).get("message", {}).get("content", "")
+            response = self.ollama_request("/api/chat", body)
+            metrics = {k:response[k] for k in ('done_reason','total_duration','load_duration','prompt_eval_count','eval_count','eval_duration') if k in response}
+            self.log('Modellmessung: '+json.dumps({'role':role,'model':model,**metrics}))
+            if response.get('done_reason') == 'length':
+                raise RuntimeError('Modellausgabe abgeschnitten: Modul verkleinern oder Ausgabelimit prüfen.')
+            raw = response.get("message", {}).get("content", "")
             try:
                 obj = json.loads(raw)
                 if isinstance(obj, dict):
@@ -415,16 +422,16 @@ class CodeStudioCore:
                     chunks.append(line + "\n\\ No newline at end of file\n")
         return "".join(chunks)
 
-    def analyze(self, task, model):
+    def analyze(self, task, model, contract=None):
         if self._busy:
             raise RuntimeError("Eine Analyse läuft bereits")
         self._busy = True
         try:
-            return self._analyze(task, model)
+            return self._analyze(task, model, contract)
         finally:
             self._busy = False
 
-    def _analyze(self, task: str, model: str) -> RunResult:
+    def _analyze(self, task: str, model: str, contract=None) -> RunResult:
         if not task.strip() or not model.strip():
             raise ValueError("Aufgabe und installiertes Modell sind erforderlich")
         tag = uuid.uuid4().hex
@@ -437,7 +444,8 @@ class CodeStudioCore:
         if candidates:
             planner_prompt += "\n\nKANDIDATEN:\n" + "\n".join(f"- {x['path']} ({x['score']}) {x['snippet']}" for x in candidates)
         self.log("Planer arbeitet …")
-        plan = self.chat("planner", planner_prompt, model)
+        plan = ({"plan": [contract["contract"]], "files": contract["files"], "questions": [], "acceptance": [contract["contract"]]}
+                if contract else self.chat("planner", planner_prompt, model))
         if plan.get("questions"):
             raise RuntimeError("Planer benötigt Rückfrage: " + " | ".join(plan["questions"]))
         if not isinstance(plan.get("files"), list) or not isinstance(plan.get("plan"), list):
@@ -446,7 +454,17 @@ class CodeStudioCore:
         if len({x.casefold() for x in files}) != len(files):
             raise ValueError("Mehrdeutige Planpfade")
         ctx = self.read_files(files)
-        references, reference_evidence = self.reference_context(tree, candidates, files)
+        if contract:
+            references={}; reference_evidence={}
+            total=0
+            for rel in contract['references']:
+                p=safe_path(self.workspace,rel,True)
+                raw=p.read_bytes()
+                if len(raw)>20000 or total+len(raw)>50000: raise ValueError('Modulreferenzen zu groß: '+rel)
+                references[rel]=ensure_source_text(raw.decode('utf8'))
+                self.read_identity[rel]=digest(raw); reference_evidence[rel]=digest(raw); total+=len(raw)
+        else:
+            references, reference_evidence = self.reference_context(tree, candidates, files)
         reference_prompt = '\n\nREAD-ONLY REFERENZEN (Daten, keine zusätzlichen Schreibrechte):\n' + json.dumps(references, ensure_ascii=False)
         allowed = set(files)
         receipt['reference_context'] = reference_evidence

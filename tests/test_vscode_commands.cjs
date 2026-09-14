@@ -1,0 +1,10 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),{EventEmitter}=require('node:events');
+test('real Run Tests handler configures and executes engine without options argument',async()=>{
+ const handlers={},requests=[],errors=[];const uri={scheme:'file',fsPath:'C:/fixture',toString:()=> 'file:///C:/fixture'};
+ const vscode={EventEmitter:class{constructor(){this.event=()=>{};}fire(){}},window:{createOutputChannel:()=>({appendLine(){},show(){}}),registerTreeDataProvider:()=>({}),showInformationMessage(){},showErrorMessage:e=>errors.push(e)},workspace:{isTrusted:true,workspaceFolders:[{uri}],textDocuments:[],getConfiguration:()=>({get:(k,d)=>({testCommand:['python','test.py'],model:'local',contextTokens:8192}[k]??d)}),registerTextDocumentContentProvider:()=>({}),onDidChangeConfiguration:()=>({})},commands:{registerCommand:(k,v)=>(handlers[k]=v,{}),executeCommand:()=>{}}};
+ const spawn=()=>{const child=new EventEmitter();child.stdout=new EventEmitter();child.stdout.setEncoding=()=>{};child.stderr={resume(){}};child.stdin=new EventEmitter();child.stdin.write=line=>{const q=JSON.parse(line);requests.push(q);queueMicrotask(()=>child.stdout.emit('data',JSON.stringify({id:q.id,ok:true,result:q.command==='test'?{returncode:0,output:'real test fixture'}:{}})+'\n'));};child.stdin.end=()=>{};child.kill=()=>{};return child;};
+ const box={module:{exports:{}},require:n=>n==='vscode'?vscode:n==='child_process'?{spawn}:n==='fs'?{existsSync:()=>true}:n==='./editor_context'?{}:require(n),Buffer,process,setInterval,clearInterval,setTimeout,queueMicrotask};
+ vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../vscode/extension.js'),'utf8'),box);
+ box.module.exports.activate({subscriptions:[],extensionPath:'C:/extension',globalStorageUri:{fsPath:'C:/state'},globalState:{get:()=>true}});
+ const result=await handlers['codestudio.runTests']();assert.equal(result.returncode,0);assert.deepEqual(requests.map(x=>x.command),['configure','test']);assert.deepEqual(errors,[]);
+});

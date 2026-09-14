@@ -1,3 +1,4 @@
+from moduleflow import validate_profiles
 """Local line-JSON service for the VS Code extension. One workspace per process."""
 import argparse
 import json
@@ -83,6 +84,14 @@ class StudioService:
             if self.transport:
                 return {**self.transport('models',{}),'workspace':str(self.core.workspace)}
             return {'models':self.core.installed_models(),'workspace':str(self.core.workspace)}
+        if command in ('graphics_models','graphics_submit','graphics_collect'):
+            if self.transport: raise ValueError('Grafikwerkzeug benötigt einen eigenen Hostvertrag; derzeit nur Standalone.')
+            from comfyassets import ComfyAssets
+            assets=ComfyAssets(self.core.workspace,self.core.runs.parent,request.get('endpoint','http://127.0.0.1:8189'))
+            if command=='graphics_models': return {'models':assets.models()}
+            if command=='graphics_collect': return assets.collect(request.get('asset_id'))
+            if request.get('approved') is not True: raise ValueError('Grafikauftrag zuerst freigeben.')
+            return assets.submit(request.get('prompt'),request.get('target'),request.get('checkpoint'),request.get('seed',42))
         if command == 'configure':
             context = request.get('context_tokens',16384)
             tests = request.get('test_argv',[])
@@ -95,15 +104,16 @@ class StudioService:
                 raise ValueError('Kontext muss zwischen 1024 und 262144 Tokens liegen.')
             if not isinstance(tests,list) or not all(isinstance(x,str) and x for x in tests):
                 raise ValueError('Tests benötigen eine Argumentliste.')
+            profiles=validate_profiles(request['test_profiles']) if 'test_profiles' in request else ([{'argv':tests,'timeout_sec':300}] if tests else [])
             if self.transport:
                 bound=self.transport('models',{})
                 context=bound['options']['num_ctx']
             self.core.config.setdefault('options',{})['num_ctx'] = context
-            self.core.config['tests'] = [{'argv':tests,'timeout_sec':300}] if tests else []
+            self.core.config['tests'] = profiles
             if endpoint is not None:
                 self.core.config['ollama_url'] = endpoint
             self.proposals.clear(); self.core.pending.clear()
-            return {'context_tokens':context,'tests_configured':bool(tests),
+            return {'context_tokens':context,'tests_configured':bool(profiles),
                     'ollama_url':None if self.transport else self.core.config.get('ollama_url')}
         if command == 'analyze':
             task, model = request.get('task'), request.get('model')

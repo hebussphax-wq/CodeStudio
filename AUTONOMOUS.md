@@ -132,3 +132,13 @@ noch eine bestandene Coding-Aufgabe. CodeStudio lädt über diese Auswahl keine
 Modelle herunter und ändert keine globalen Ollama-Einstellungen. Unterstützt
 werden lokale HTTP-Adressen (localhost, 127.0.0.1, ::1). Hostgebundene TobyKi-
 Projekte behalten ihre Hoststeuerung und erlauben hier keine Adressüberschreibung.
+
+## Modulabläufe und lokale Grafiken
+
+Ein expliziter Workflow (schema codestudio.modules.v1) ergänzt den bisherigen freien Plan. Jedes Modul enthält id, contract, files (höchstens vier), references, depends_on, tests (Indizes freigegebener Testprofile) und optional models mit coder/reviewer. Nur diese Dateien sind schreibbar. Ein Modul wird erst nach Review und kumulativen Tests als verified vermerkt. Fehler werden innerhalb des Reparaturbudgets sofort bearbeitet; abhängige Schritte beginnen erst danach. Zum Schluss laufen alle Profile. Bei Fehlschlag wird weiterhin der gesamte Lauf zurückgerollt. Automatische Wiederaufnahme ist noch nicht implementiert.
+
+VS Code: „Modul-Workflow laden“ liest eine JSON-Datei mit task, workflow und test_profiles. Der geöffnete Vertrag samt Programmen wird vor Start geprüft und freigegeben. Programme bleiben vom Auftraggeber definiert; das Modell kann keine Shell-Befehle auswählen. Ein Workflow beweist nur seine deklarierten Kriterien, nicht die Vollständigkeit jeder unklar formulierten Produktidee.
+
+„Grafik lokal mit ComfyUI erzeugen“ verwendet einen bereits laufenden lokalen ComfyUI-Dienst (Standard 127.0.0.1:8189), vorhandenen Checkpoint und ausschließlich Standardknoten. Es lädt keine Modelle oder Erweiterungen herunter. Der Auftrag wird mit Prompt-ID protokolliert. Erst fertige History, PNG-Prüfsummen, passende Abmessungen und zurückgelesener Datei-Hash ergeben succeeded. Nur neue PNG-Pfade im Projekt werden importiert. Bei unklarer Übermittlung wird nicht automatisch neu eingereiht. Grafiken sind getrennte Aufträge und werden bei einem späteren Code-Fehlschlag nicht entfernt. Hostgebundene Grafikerzeugung benötigt noch einen eigenen Hostvertrag.
+
+Lokale Coder und ComfyUI teilen Grafikspeicher: schwere Generierungen nacheinander ausführen. Das Vorhandensein eines Modells/Studios beweist weder Anbindung noch erfolgreiche Entwicklung.

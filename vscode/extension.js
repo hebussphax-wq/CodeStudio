@@ -42,6 +42,8 @@ function activate(context){
   item(status,null,null,busy?'sync~spin':'info'),
   item(config().get('hostBinding')?'Modellsteuerung: TobyKi-Hostsitzung':'Modellsteuerung: eigenständiges Ollama',null,null,'plug'),
   item('Autonom entwickeln','codestudio.autonomous',undefined,'rocket'),
+  item('Modul-Workflow laden','codestudio.workflow',undefined,'list-tree'),
+  ...(!config().get('hostBinding')?[item('Grafik lokal mit ComfyUI erzeugen','codestudio.graphics',undefined,'file-media')]:[]),
   ...(activeRun?[item('Autonomen Auftrag stoppen','codestudio.stop',undefined,'debug-stop')]:[]),
   item('Aufgabe planen und Diff erzeugen','codestudio.generate',undefined,'edit'),
   item('Projekt und Editorkontext prüfen','codestudio.inspect',undefined,'inspect'),
@@ -108,10 +110,45 @@ function activate(context){
    }finally{busy=false;changed.fire();}
   }),
   'codestudio.stop':async()=>{if(engine&&activeRun){status='Stoppen und Änderungen zurückrollen';changed.fire();return engine.request('cancel',{run_id:activeRun});}},
+  'codestudio.graphics':()=>guard(async()=>{
+   const client=await ensure();if(!client)return;
+   const graphicsWorkspace=folder.uri.toString(),graphicsSettings=settingsIdentity();
+   const assertGraphicsCurrent=()=>{if(dirty()||!vscode.workspace.isTrusted||settingsIdentity()!==graphicsSettings||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===graphicsWorkspace))throw Error('Projekt oder Einstellungen geändert; Grafikauftrag bleibt im Beleg erhalten.');};
+   const endpoint=await vscode.window.showInputBox({prompt:'Lokaler ComfyUI-Dienst',value:'http://127.0.0.1:8189'});if(!endpoint)return;
+   const models=await client.request('graphics_models',{endpoint});
+   const checkpoint=await vscode.window.showQuickPick(models.models,{placeHolder:'Vorhandenes Grafikmodell wählen'});if(!checkpoint)return;
+   const prompt=await vscode.window.showInputBox({prompt:'Welche Grafik soll lokal entstehen?',ignoreFocusOut:true});if(!prompt)return;
+   const target=await vscode.window.showInputBox({prompt:'Neuer PNG-Pfad im Projekt',value:'assets/background.png'});if(!target)return;
+   if(await vscode.window.showWarningMessage('Grafik mit '+checkpoint+' lokal erzeugen und als '+target+' in '+folder.uri.fsPath+' speichern?',{modal:true},'Grafik erzeugen')!=='Grafik erzeugen')return;
+   busy=true;status='ComfyUI erzeugt die Grafik';changed.fire();output.show(true);
+   try{
+    assertGraphicsCurrent();
+    let job=await client.request('graphics_submit',{endpoint,prompt,target,checkpoint,approved:true});
+    output.appendLine('Grafikauftrag: '+job.id);
+    const until=Date.now()+300000;
+    while(job.status==='queued'&&Date.now()<until){await new Promise(r=>setTimeout(r,1000));assertGraphicsCurrent();job=await client.request('graphics_collect',{endpoint,asset_id:job.id});}
+    status=job.status==='succeeded'?'Grafik erzeugt und geprüft':job.status==='failed'?'Grafikerzeugung fehlgeschlagen':'Grafik noch in Bearbeitung · Beleg prüfen';
+    output.appendLine(JSON.stringify(job));
+    if(job.status==='succeeded')await vscode.commands.executeCommand('vscode.open',vscode.Uri.file(path.join(folder.uri.fsPath,target)));
+    return job;
+   }finally{busy=false;changed.fire();}
+  }),
+  'codestudio.workflow':async()=>{
+   if(busy)return;
+   const picked=await vscode.window.showOpenDialog({canSelectMany:false,filters:{'CodeStudio Workflow':['json']},openLabel:'Workflow prüfen'});
+   if(!picked?.length)return;
+   if(picked[0].scheme!=='file')throw Error('Lokale Workflow-Datei erforderlich.');
+   const raw=fs.readFileSync(picked[0].fsPath,'utf8');if(Buffer.byteLength(raw)>120000)throw Error('Workflow zu groß.');
+   const bundle=JSON.parse(raw);
+   if(!bundle.task||!bundle.workflow||!Array.isArray(bundle.test_profiles))throw Error('Workflow benötigt Aufgabe, Module und Testprofile.');
+   await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(picked[0]));
+   const yes=await vscode.window.showWarningMessage('Diesen geöffneten Workflow samt sichtbaren Testprogrammen für das gewählte Projekt verwenden?',{modal:true},'Workflow verwenden');
+   if(yes==='Workflow verwenden')return commands['codestudio.autonomous']({task:bundle.task,workflow:bundle.workflow,test_profiles:bundle.test_profiles});
+  },
   'codestudio.autonomous':options=>guard(async()=>{
    const client=await ensure();if(!client)return;
    if(dirty())throw Error('Offene Änderungen zuerst speichern.');
-   if(!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen. Autonomer Abschluss benötigt echte Tests.');
+   if(!options?.test_profiles&&!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen. Autonomer Abschluss benötigt echte Tests.');
    const task=options?.task||await vscode.window.showInputBox({prompt:'Autonom entwickeln: Ziel und überprüfbare Akzeptanzkriterien',ignoreFocusOut:true});if(!task)return;
    const settings=settingsIdentity(),workspace=folder.uri.toString();
    const limits={steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),seconds:config().get('autonomousMinutes',30)*60,model_calls:80};
@@ -122,8 +159,8 @@ function activate(context){
    let stopSent=false;
    const watch=setInterval(()=>{if(!stopSent&&(dirty()||settings!==settingsIdentity()||!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===workspace))){stopSent=true;client.request('cancel',{run_id:activeRun}).catch(()=>{});}},250);
    try{
-    await client.request('configure',configureRequest());
-    const result=await client.request('autonomous',{run_id:activeRun,approved:true,task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:config().get('model'),limits});
+    await client.request('configure',{...configureRequest(),...(options?.test_profiles?{test_profiles:options.test_profiles}:{})});
+    const result=await client.request('autonomous',{run_id:activeRun,approved:true,task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:config().get('model'),limits,...(options?.workflow?{workflow:options.workflow}:{})});
     const labels={succeeded:'Autonom abgeschlossen · Tests und QC bestanden',cancelled:'Abgebrochen · Änderungen zurückgerollt',timed_out:'Zeitbudget erreicht · zurückgerollt',budget_exhausted:'Budget erreicht · zurückgerollt',failed:'Auftrag fehlgeschlagen · zurückgerollt',conflict:'Fremde Änderung erkannt · Auftrag gestoppt',rollback_conflict:'Konflikt · Sicherung prüfen',recovery_required:'Prozessende unklar · Wiederherstellung prüfen',blocked:'Rückfrage erforderlich · Auftrag gestoppt'};
     status=labels[result.receipt.status]||result.receipt.status;
     output.appendLine(status+'\n'+(result.receipt.error||'')+'\n'+(result.receipt.test?.output||'')+'\nBeleg: '+result.receipt_path);

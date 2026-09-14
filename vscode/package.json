@@ -105,6 +105,14 @@
       {
         "command": "codestudio.provider",
         "title": "CodeStudio: Lokalen Ollama-Dienst auswählen"
+      },
+      {
+        "command": "codestudio.workflow",
+        "title": "CodeStudio: Modul-Workflow laden und prüfen"
+      },
+      {
+        "command": "codestudio.graphics",
+        "title": "CodeStudio: Grafik lokal mit ComfyUI erzeugen"
       }
     ],
     "configuration": {
