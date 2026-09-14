@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== KI-Codestudio v0.3 Setup ===" -ForegroundColor Cyan
+Write-Host "=== KI-Codestudio v0.3.1 Setup ===" -ForegroundColor Cyan
 
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Error "Python wurde nicht gefunden. Python 3.11+ installieren und PATH aktivieren."

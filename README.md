@@ -1,86 +1,93 @@
-# KI-Codestudio v0.3 (Ollama, Windows, NVIDIA)
+# KI-Codestudio v0.3.1
 
-Lokales, kontrolliertes Multi-Rollen-Codestudio:
+Lokales Multi-Rollen-Codestudio für Windows + NVIDIA + Ollama.
 
-**Eingabe → Scout → Planer → Coder → Reviewer → Diff → Freigabe → Anwenden → Tests → (Reparatur) → Receipt**
+**Eingabe → Scout → Planer → Coder → Reviewer → Diff → Freigabe → Transaktion → Tests → Reparatur oder Rollback → Receipt**
 
-- läuft lokal über Ollama
-- Python-Stdlib only
-- keine Cloud notwendig
-- KI darf nur innerhalb des gewählten Workspace schreiben
-- Änderungen werden **vor** dem Schreiben als Unified Diff gezeigt
-- vor jedem Anwenden wird ein dateibezogenes Backup erstellt
-- in Git-Repositories wird zusätzlich ein Checkpoint-Commit versucht
-- Tests laufen nur aus deinem eigenen `test_command` in `config.json`
+- nur Python-Standardbibliothek
+- keine Cloud
+- schreibt nur im Workspace
+- zeigt den Diff **vor** dem Schreiben
+- jede Aufgabe läuft in einer Transaktion (Snapshot + Rollback)
+- Git fasst deine eigenen uncommitteten Dateien nicht an
 
-## 1. Hardware-/Modellprofil (2026)
+## Start
 
-Ein Modell für alle drei Rollen – auf 8–16 GB passt nur eines gleichzeitig ins VRAM.
-
-| VRAM | Standard (`setup.ps1`) | `num_ctx` | Fallback |
-|---|---|---|---|
-| 8 GB | `qwen2.5-coder:7b` | 8192 | — |
-| 12 GB | `qwen2.5-coder:14b` | 12288 | `qwen2.5-coder:7b` |
-| 16 GB | `gpt-oss:20b` | 16384 | `qwen2.5-coder:14b` |
-| 24 GB | `qwen3-coder:30b` | 16384 | `gpt-oss:20b` |
-
-`qwen2.5-coder` ist die vorige Generation, auf 8–12 GB aber weiterhin der beste dichte Coder, der wirklich passt.
-
-Nicht als Standard unter 24 GB:
-
-- `qwen3-coder:30b` (~19 GB Gewichte) braucht Kopf für KV-Cache. Auf 16 GB nur mit CPU-Offload.
-- `qwen3-coder-next` (~52 GB) erst mit viel System-RAM (praktisch 64 GB+).
-
-## 2. Installation
-
-Voraussetzungen: Windows 10/11, NVIDIA-Treiber, Ollama für Windows, Python 3.11+ im PATH.
+Voraussetzungen: Windows 10/11, NVIDIA-Treiber, [Ollama](https://ollama.com), Python 3.11+.
 
 ```powershell
+git clone https://github.com/hebussphax-wq/CodeStudio.git
+cd CodeStudio
 Set-ExecutionPolicy -Scope Process Bypass
 .\setup.ps1 -VramGB 16
+```
+
+Ollama danach einmal beenden und neu starten (`OLLAMA_MAX_LOADED_MODELS=1`).
+
+```powershell
+python -m unittest tests.test_safety -v
 python studio.py --doctor
 python studio.py "Füge in api.py einen /health-Endpunkt hinzu"
 ```
 
-Ollama danach einmal vollständig beenden und neu starten, damit `OLLAMA_MAX_LOADED_MODELS=1` gilt.
+Ohne Argument startet `studio.py` eine Eingabeschleife. `start.cmd` macht dasselbe.
+
+| Flag | Wirkung |
+|---|---|
+| `--dry-run` | Diff erzeugen, nichts schreiben |
+| `--yes` | nach Review ohne Rückfrage anwenden |
+| `--doctor` | Ollama, GPU, Modelle prüfen |
+| `--model NAME` | Modell nur für diesen Lauf |
 
 Workspace: `.\workspace` oder Pfad in `config.json`.
 
-## 3. Start
+## Modelle
 
-```powershell
-python studio.py "Aufgabe"
-python studio.py
-python studio.py "Aufgabe" --dry-run
-python studio.py "Aufgabe" --yes
-python studio.py --doctor
-python studio.py "Aufgabe" --model qwen2.5-coder:14b
+Ein Modell für alle Rollen. Auf 8–16 GB passt nur eines gleichzeitig.
+
+| VRAM | Standard | Kontext |
+|---|---|---|
+| 8 GB | `qwen2.5-coder:7b` | 8192 |
+| 12 GB | `qwen2.5-coder:14b` | 12288 |
+| 16 GB | `gpt-oss:20b` | 16384 |
+| 24 GB | `qwen3-coder:30b` | 16384 |
+
+`qwen3-coder:30b` (~19 GB) braucht auf 16 GB CPU-Offload. Nicht der Default.
+
+## Sicherheit
+
+- nur relative Pfade, kein `..`, keine Absoluten
+- `.git`, `node_modules`, Venv, Build/Cache gesperrt (Windows: auch `.GIT`)
+- Whole-File-Write auf **gekürzt gelesene** Dateien wird abgelehnt
+- Coder darf nur Plan-Dateien schreiben (`enforce_plan_scope`)
+- atomare Writes (`os.replace`)
+- bei Testfehler oder Exception nach dem Schreiben: Rollback der ganzen Aufgabe
+- Tests nur aus `config.json` (`tests[].argv` oder `test_command`), nie aus Modell-Output
+- `git add -A` gibt es nicht. Optionaler Commit nur der geänderten Pfade
+
+Eigene Tests:
+
+```json
+"tests": [
+  { "name": "unit", "argv": ["python", "-m", "pytest", "-q"], "timeout_sec": 300 }
+]
 ```
 
-## 4. Neu in v0.3
+## Grenzen (absichtlich)
 
-- **Scout:** Stichwortsuche vor dem Planer (kein Embedding).
-- **Import-Kontext:** direkte Python-/JS-Importe der gewählten Dateien.
-- **Test-Reparatur:** bei rotem `test_command` eine Coder/Reviewer-Runde.
-- **Rollback:** bei endgültig roten Tests Restore aus dem ersten Backup.
-- **Git-Branch pro Auftrag:** optional `git_branch_per_task`.
+Keine autonome Shell, kein Internet, kein Tool-Calling, keine GUI, kein semantischer Index.
 
-## Troubleshooting
+Grosse Dateien werden für den Prompt gekürzt. Der Coder darf sie dann nicht als Ganzes überschreiben – die Datei teilen oder `context_max_bytes_per_file` erhöhen.
 
-- **Ollama down / nicht erreichbar:** Prüfe, ob der Ollama-Dienst läuft (`ollama list`). Danach `python studio.py --doctor`. Firewall und Proxy nicht auf den lokalen Ollama-Port blockieren.
-- **VRAM zu knapp / Modell lädt nicht:** Kleineres Modell wählen (`setup.ps1 -VramGB …` oder `--model …`). Nur ein Modell gleichzeitig laden (`OLLAMA_MAX_LOADED_MODELS=1`).
-- **num_ctx / Kontextfenster:** Zu großes `num_ctx` frisst VRAM. Werte aus der Hardware-Tabelle nutzen; bei Abbrüchen `num_ctx` in `config.json` senken.
+## Dateien
 
-## Receipts
-
-Jeder Lauf schreibt Belege unter `runs/` (JSON/Logs je Auftrag). Dort stehen u. a. Scout-Treffer, Review-Runden, angewendete Dateien und Testergebnis — zum Nachvollziehen, nicht als automatisches Ready.
-
-## Sicherheitsgrenzen
-
-- Die KI darf **keinen Shell-Befehl** ausführen.
-- Schreiben nur im gewählten Workspace, und erst nach angezeigtem Unified Diff, Freigabe und datebezogenem Backup.
-- `test_command` kommt ausschließlich aus deiner `config.json`.
-
-## Bekannte Punkte
-
-- `git_branch_per_task`: wenn aktiv, wechselt das Studio pro Auftrag auf einen eigenen Git-Branch (Arbeitsverzeichnis bleibt der Workspace, der Branch ändert sich).
+```text
+studio.py          Pipeline
+config.json        Modelle, Limits, Tests
+setup.ps1          VRAM-Profil + ollama pull
+start.cmd          interaktive Schleife
+tests/             Safety-Tests ohne Ollama
+workspace/         dein Projekt
+runs/              Receipts
+backups/           Transaktions-Snapshots
+```
