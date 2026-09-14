@@ -119,3 +119,16 @@ Vorhandene Marker-/Sandbox-Diagnosen sind keine alternative Entwicklungsengine.
 Der Launcher CodeStudio.exe <Projektordner> öffnet das gemeinsame Standalone-
 Studio. Für Workflow-Kopplung nutzt der jeweilige Host den obigen Dienst und
 seine Autorisierung. Ein bloßer Editorstart ist keine Workflow- oder Modellbindung.
+# Vorhandene lokale Modellpools
+
+In der VS-Code-Seitenleiste kann ein eigenständiges CodeStudio über **Ollama**
+die Adresse eines bereits laufenden lokalen Dienstes auswählen. Danach zeigt
+**Modell** dessen tatsächlich verfügbare Modelle. Die Adresse wird pro Projekt
+gespeichert; Modellwechsel oder Adresswechsel verwerfen alte Vorschläge.
+
+Ein Modellordner auf E: oder H: muss vom gewählten Ollama-Dienst bereitgestellt
+werden. Eine Datei auf einem Laufwerk allein beweist weder ein ladbares Modell
+noch eine bestandene Coding-Aufgabe. CodeStudio lädt über diese Auswahl keine
+Modelle herunter und ändert keine globalen Ollama-Einstellungen. Unterstützt
+werden lokale HTTP-Adressen (localhost, 127.0.0.1, ::1). Hostgebundene TobyKi-
+Projekte behalten ihre Hoststeuerung und erlauben hier keine Adressüberschreibung.

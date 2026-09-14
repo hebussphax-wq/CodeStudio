@@ -35,7 +35,8 @@ function activate(context){
  let engine=null,folder=null,proposal=null,busy=false,activeRun=null,status='Projekt öffnen und Aufgabe beschreiben';
  const boundWorkspaces=new Map();
  const config=()=>vscode.workspace.getConfiguration('codestudio',folder?.uri);
- const settingsIdentity=()=>JSON.stringify({model:config().get('model'),context:config().get('contextTokens'),tests:config().get('testCommand',[]),hostBinding:config().get('hostBinding',''),steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),minutes:config().get('autonomousMinutes',30)});
+ const configureRequest=()=>({context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[]),...(!config().get('hostBinding')?{ollama_url:config().get('ollamaUrl','http://127.0.0.1:11434')}:{})});
+ const settingsIdentity=()=>JSON.stringify({endpoint:config().get('ollamaUrl'),model:config().get('model'),context:config().get('contextTokens'),tests:config().get('testCommand',[]),hostBinding:config().get('hostBinding',''),steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),minutes:config().get('autonomousMinutes',30)});
  const item=(label,command,arg,icon)=>{const i=new vscode.TreeItem(label);if(command)i.command={command,title:label,arguments:arg===undefined?[]:[arg]};if(icon)i.iconPath=new vscode.ThemeIcon(icon);return i;};
  const provider={onDidChangeTreeData:changed.event,getTreeItem:x=>x,getChildren:()=>[
   item(status,null,null,busy?'sync~spin':'info'),
@@ -47,6 +48,7 @@ function activate(context){
   item('Projektdatei öffnen','codestudio.projectFile',undefined,'go-to-file'),
   item('Probleme in VS Code anzeigen','codestudio.problems',undefined,'error'),
   item('Projekttests jetzt ausführen','codestudio.runTests',undefined,'testing-run-icon'),
+  ...(!config().get('hostBinding')?[item('Ollama: '+config().get('ollamaUrl','http://127.0.0.1:11434'),'codestudio.provider',undefined,'plug')]:[]),
   item('Modell: '+config().get('model'),'codestudio.model',undefined,'server'),
   item('Kontext: '+config().get('contextTokens')+' Tokens','codestudio.context',undefined,'settings'),
   item(config().get('testCommand',[]).length?'Projekttests eingestellt':'Projekttests einstellen','codestudio.tests',undefined,'beaker'),
@@ -81,11 +83,12 @@ function activate(context){
   'codestudio.inspect':()=>guard(async()=>{if(!await ensure())return;const snapshot=editorContext.collect(vscode,folder);const uri=vscode.Uri.parse('codestudio-diff:/editor-context/'+Date.now()+'.json');documents.set(uri.toString(),JSON.stringify(snapshot,null,2));await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));return snapshot;}),
   'codestudio.problems':()=>vscode.commands.executeCommand('workbench.actions.view.problems'),
   'codestudio.projectFile':()=>guard(async()=>{if(!await ensure())return;const files=await vscode.workspace.findFiles(new vscode.RelativePattern(folder,'**/*'), '**/{.git,node_modules,.venv,dist,build,target}/**',300);const items=files.map(uri=>({label:editorContext.relativeFile(folder,uri),uri})).filter(x=>x.label);const selected=await vscode.window.showQuickPick(items,{placeHolder:'Datei im gewählten CodeStudio-Projekt öffnen'});if(selected)await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(selected.uri));}),
-  'codestudio.runTests':()=>guard(async()=>{const client=await ensure();if(!client)return;if(dirty())throw Error('Offene Änderungen zuerst speichern.');if(!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen.');busy=true;changed.fire();try{await client.request('configure',{context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[])});const result=await client.request('test');output.appendLine(result.output||'');output.show(true);status=result.returncode===0?'Projekttests bestanden':'Projekttests fehlgeschlagen';return result;}finally{busy=false;changed.fire();}}),
+  'codestudio.runTests':()=>guard(async()=>{const client=await ensure();if(!client)return;if(dirty())throw Error('Offene Änderungen zuerst speichern.');if(!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen.');busy=true;changed.fire();try{await client.request('configure',configureRequest());const result=await client.request('test');output.appendLine(result.output||'');output.show(true);status=result.returncode===0?'Projekttests bestanden':'Projekttests fehlgeschlagen';return result;}finally{busy=false;changed.fire();}}),
   'codestudio.history':()=>guard(async()=>{const client=await ensure();if(!client)return;const result=await client.request('history');const chosen=await vscode.window.showQuickPick(result.runs.map(r=>({label:r.status+' · '+r.task,description:r.run_id,receipt:r.receipt_path})),{placeHolder:'Autonomen Auftrag und QC-Beleg öffnen'});if(chosen)await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(chosen.receipt)));}),
   'codestudio.output':()=>output.show(),
   'codestudio.openDiff':showDiff,
-  'codestudio.model':()=>guard(async()=>{const client=await ensure();if(!client)return;const r=await client.request('models');const model=await vscode.window.showQuickPick(r.models,{placeHolder:'Installiertes Ollama-Modell'});await update('model',model);}),
+  'codestudio.provider':()=>guard(async()=>{const client=await ensure();if(!client)return;if(config().get('hostBinding'))throw Error('Modelladresse wird durch die Hostbindung bestimmt.');const value=await vscode.window.showInputBox({prompt:'Adresse des lokalen Ollama-Dienstes',value:config().get('ollamaUrl','http://127.0.0.1:11434'),ignoreFocusOut:true});if(value===undefined)return;await client.request('configure',{...configureRequest(),ollama_url:value});await update('ollamaUrl',value);const result=await client.request('models');status=result.models.length+' Modelle am gewählten Dienst';changed.fire();}),
+  'codestudio.model':()=>guard(async()=>{const client=await ensure();if(!client)return;await client.request('configure',configureRequest());const r=await client.request('models');const model=await vscode.window.showQuickPick(r.models,{placeHolder:'Installiertes Ollama-Modell'});await update('model',model);}),
   'codestudio.context':()=>guard(async()=>{if(!await ensure())return;if(config().get('hostBinding')){vscode.window.showInformationMessage('Kontext und Ressourcen werden durch die gebundene TobyKi-Hostkonfiguration bestimmt. Nach Änderungen erneut aus TobyKi öffnen.');return;}const value=await vscode.window.showQuickPick(['8192','16384','32768','65536','131072'],{placeHolder:'Kontextfenster – größere Werte benötigen mehr Speicher'});if(value)await update('contextTokens',Number(value));}),
   'codestudio.tests':()=>guard(async()=>{if(!await ensure())return;const value=await vscode.window.showInputBox({prompt:'Testprogramm und Argumente als JSON-Liste; [] bedeutet ungeprüft',value:JSON.stringify(config().get('testCommand',[])),ignoreFocusOut:true});if(value===undefined)return;const args=JSON.parse(value);if(!Array.isArray(args)||!args.every(x=>typeof x==='string'&&x))throw Error('Argumentliste erforderlich.');await update('testCommand',args);}),
   'codestudio.generate':options=>guard(async()=>{
@@ -95,7 +98,7 @@ function activate(context){
    busy=true;proposal=null;status='Scout → Planer → Coder → Reviewer';changed.fire();output.show(true);
    try{
     const settings=settingsIdentity();
-    await client.request('configure',{context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[])});
+    await client.request('configure',configureRequest());
     proposal=await client.request('analyze',{task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:options?.model||config().get('model')});proposal.settings=settings;
     if(settings!==settingsIdentity()){proposal=null;await client.request('reject');throw Error('Einstellungen während der Planung geändert. Bitte neu analysieren.');}
     status='Vorschlag prüfen · '+proposal.changes.length+' Datei(en)';
@@ -119,7 +122,7 @@ function activate(context){
    let stopSent=false;
    const watch=setInterval(()=>{if(!stopSent&&(dirty()||settings!==settingsIdentity()||!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===workspace))){stopSent=true;client.request('cancel',{run_id:activeRun}).catch(()=>{});}},250);
    try{
-    await client.request('configure',{context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[])});
+    await client.request('configure',configureRequest());
     const result=await client.request('autonomous',{run_id:activeRun,approved:true,task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:config().get('model'),limits});
     const labels={succeeded:'Autonom abgeschlossen · Tests und QC bestanden',cancelled:'Abgebrochen · Änderungen zurückgerollt',timed_out:'Zeitbudget erreicht · zurückgerollt',budget_exhausted:'Budget erreicht · zurückgerollt',failed:'Auftrag fehlgeschlagen · zurückgerollt',conflict:'Fremde Änderung erkannt · Auftrag gestoppt',rollback_conflict:'Konflikt · Sicherung prüfen',recovery_required:'Prozessende unklar · Wiederherstellung prüfen',blocked:'Rückfrage erforderlich · Auftrag gestoppt'};
     status=labels[result.receipt.status]||result.receipt.status;

@@ -44,6 +44,29 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.service.handle({'command':'apply','proposal_id':proposed['proposal_id'],'approved':True})
         self.assertEqual((self.workspace/'calc.py').read_text(),'user change')
 
+    def test_local_provider_selection_routes_model_listing_and_invalidates_proposal(self):
+        proposed = self.propose()
+        self.service.handle({'command':'configure', 'ollama_url':'http://127.0.0.1:11439/'})
+        with patch.object(self.service.core, 'ollama_request', return_value={'models':[{'name':'existing:24b'}]}) as call:
+            self.assertEqual(self.service.handle({'command':'models'})['models'], ['existing:24b'])
+            call.assert_called_once_with('/api/tags', timeout=10)
+        self.assertEqual(self.service.core.config['ollama_url'], 'http://127.0.0.1:11439')
+        with self.assertRaises(ValueError):
+            self.service.handle({'command':'apply','proposal_id':proposed['proposal_id'],'approved':True})
+
+    def test_provider_rejects_remote_credentials_paths_and_partial_configuration(self):
+        before = copy.deepcopy(self.service.core.config)
+        for url in ['https://example.com', 'http://127.0.0.1.evil.test', 'http://user:pass@localhost',
+                    'http://localhost/api', 'http://localhost?x=1', 'http://localhost:0',
+                    'http://localhost:99999', 'http://localhost\n', None]:
+            with self.assertRaises(ValueError):
+                self.service.handle({'command':'configure','ollama_url':url,'context_tokens':32768})
+            self.assertEqual(self.service.core.config, before)
+        self.service.transport = lambda *_: self.fail('Host must not be queried on rejected override')
+        with self.assertRaises(ValueError):
+            self.service.handle({'command':'configure','ollama_url':'http://localhost:11439'})
+        self.assertEqual(self.service.core.config, before)
+
     def test_explicit_test_command_requires_profile_and_reports_real_exit(self):
         import sys
         with self.assertRaises(ValueError):

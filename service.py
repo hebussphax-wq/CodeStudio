@@ -4,10 +4,27 @@ import json
 import pathlib
 import sys
 import threading
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from autonomy import AutonomousRun
 from core import CodeStudioCore
 from safety import canonical, redact, safe_path
+
+def local_ollama_url(value):
+    """Standalone provider selection never sends project context off this machine."""
+    if not isinstance(value, str):
+        raise ValueError('Lokale Ollama-Adresse erforderlich.')
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError('Ungültige Ollama-Adresse.') from exc
+    if (parsed.scheme != 'http' or parsed.hostname not in ('localhost', '127.0.0.1', '::1')
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path not in ('', '/') or parsed.query or parsed.fragment
+            or any(c.isspace() for c in value) or port == 0):
+        raise ValueError('Ollama muss eine lokale HTTP-Adresse ohne Zugangsdaten oder Pfad sein.')
+    return value.rstrip('/')
 
 class StudioService:
     def __init__(self, root, config, emit, transport=None):
@@ -69,6 +86,11 @@ class StudioService:
         if command == 'configure':
             context = request.get('context_tokens',16384)
             tests = request.get('test_argv',[])
+            endpoint = None
+            if 'ollama_url' in request:
+                if self.transport:
+                    raise ValueError('Modelladresse wird durch die Hostbindung bestimmt.')
+                endpoint = local_ollama_url(request['ollama_url'])
             if type(context) is not int or not 1024 <= context <= 262144:
                 raise ValueError('Kontext muss zwischen 1024 und 262144 Tokens liegen.')
             if not isinstance(tests,list) or not all(isinstance(x,str) and x for x in tests):
@@ -78,8 +100,11 @@ class StudioService:
                 context=bound['options']['num_ctx']
             self.core.config.setdefault('options',{})['num_ctx'] = context
             self.core.config['tests'] = [{'argv':tests,'timeout_sec':300}] if tests else []
+            if endpoint is not None:
+                self.core.config['ollama_url'] = endpoint
             self.proposals.clear(); self.core.pending.clear()
-            return {'context_tokens':context,'tests_configured':bool(tests)}
+            return {'context_tokens':context,'tests_configured':bool(tests),
+                    'ollama_url':None if self.transport else self.core.config.get('ollama_url')}
         if command == 'analyze':
             task, model = request.get('task'), request.get('model')
             if not isinstance(task,str) or not task.strip() or len(task)>24000:

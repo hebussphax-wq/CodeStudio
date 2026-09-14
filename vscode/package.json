@@ -42,10 +42,22 @@
       ]
     },
     "commands": [
-      {"command": "codestudio.inspect", "title": "CodeStudio: Projekt und Editorkontext prüfen"},
-      {"command": "codestudio.projectFile", "title": "CodeStudio: Projektdatei öffnen"},
-      {"command": "codestudio.problems", "title": "CodeStudio: VS-Code-Probleme anzeigen"},
-      {"command": "codestudio.runTests", "title": "CodeStudio: Projekttests jetzt ausführen"},
+      {
+        "command": "codestudio.inspect",
+        "title": "CodeStudio: Projekt und Editorkontext prüfen"
+      },
+      {
+        "command": "codestudio.projectFile",
+        "title": "CodeStudio: Projektdatei öffnen"
+      },
+      {
+        "command": "codestudio.problems",
+        "title": "CodeStudio: VS-Code-Probleme anzeigen"
+      },
+      {
+        "command": "codestudio.runTests",
+        "title": "CodeStudio: Projekttests jetzt ausführen"
+      },
       {
         "command": "codestudio.generate",
         "title": "CodeStudio: Aufgabe planen und Diff erzeugen"
@@ -89,6 +101,10 @@
       {
         "command": "codestudio.history",
         "title": "CodeStudio: Autonome Aufträge und QC-Belege"
+      },
+      {
+        "command": "codestudio.provider",
+        "title": "CodeStudio: Lokalen Ollama-Dienst auswählen"
       }
     ],
     "configuration": {
@@ -145,6 +161,12 @@
           "minimum": 1,
           "maximum": 120,
           "description": "Zeitbudget für einen autonomen Auftrag."
+        },
+        "codestudio.ollamaUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "scope": "resource",
+          "description": "Lokaler Ollama-Dienst für vorhandene Modelle. Hostgebundene Projekte verwenden ihre Hostkonfiguration."
         }
       }
     }
