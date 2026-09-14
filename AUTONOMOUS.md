@@ -150,3 +150,5 @@ Modul-Coder liefern pro Datei nur path, op und vollständigen content; die separ
 Module QC displays source with real line breaks. A model rejection after passing tests receives one bounded countercheck against the same source and contract; both judgments remain in the receipt. A confirmed rejection still blocks dependents and rolls back. This handles disputed model findings without treating test success alone as completion.
 
 QC now receives all module files and bounded read-only references. Factual observations precede the verdict, and a review rejection remains in repair feedback after a no-op. Host and direct coders share the same module prompt/schema. Local Qwen3-Coder imports must be checked for the intended chat template; an operator-created alias can reuse existing weights without replacing the original tag.
+
+After a failed module test, the planner diagnoses the actual source and test output before the coder attempts repair. The bounded diagnosis is cached by exact module source and failure output, so an unchanged no-op reuses the diagnosis instead of spending another analysis call. Diagnostics never grant new write paths or test-edit permission.

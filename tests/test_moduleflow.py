@@ -11,7 +11,7 @@ class ModuleTests(unittest.TestCase):
   (self.root/'calc.py').write_text('a=0\nb=0\n')
   (self.root/'test_a.py').write_text('from calc import a\nassert a==2, "a must equal 2"\n')
   (self.root/'test_b.py').write_text('from calc import b\nassert b==3, "b must equal 3"\n')
-  self.config={'workspace':str(self.root),'state_dir':str(self.root/'state'),'tests':[{'argv':[sys.executable,'-B','test_a.py']},{'argv':[sys.executable,'-B','test_b.py']}]}
+  self.config={'repair_diagnosis':False,'workspace':str(self.root),'state_dir':str(self.root/'state'),'tests':[{'argv':[sys.executable,'-B','test_a.py']},{'argv':[sys.executable,'-B','test_b.py']}]}
   self.workflow={'schema':'codestudio.modules.v1','modules':[
    {'id':'a','contract':'a=2','files':['calc.py'],'references':['test_a.py'],'tests':[0],'models':{'coder':'small','reviewer':'review'}},
    {'id':'b','contract':'preserve a and b=3','files':['calc.py'],'references':['test_b.py'],'tests':[1],'depends_on':['a']}]}
@@ -121,3 +121,12 @@ class ModuleTests(unittest.TestCase):
    return next(replies)
   with patch.object(CodeStudioCore,'chat',side_effect=chat):result=run.execute()['receipt']
   self.assertEqual(result['status'],'succeeded');self.assertIn('helper=7',reviews[0]);self.assertIn('assert a==2',reviews[0])
+
+ def test_failed_test_diagnosis_precedes_coder_and_is_reused_for_noop(self):
+  self.config['repair_diagnosis']=True;run=self.run_new(2);run.core.config['max_review_rounds']=0;calls=[]
+  replies=iter([change('a=1\nb=0\n'),{'plan':['Replace wrong initializer a=1 with a=2'],'files':['calc.py'],'questions':[],'acceptance':[]},change('a=1\nb=0\n'),change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,OK])
+  def chat(role,prompt,model):calls.append((role,prompt));return next(replies)
+  with patch.object(CodeStudioCore,'chat',side_effect=chat):result=run.execute()['receipt']
+  self.assertEqual(result['status'],'succeeded');self.assertEqual(sum(role=='planner' for role,_ in calls),1)
+  self.assertIn('Replace wrong initializer',calls[2][1]);self.assertIn('Replace wrong initializer',calls[3][1])
+  self.assertEqual([d['reused'] for d in result['repair_diagnoses']],[False,True])

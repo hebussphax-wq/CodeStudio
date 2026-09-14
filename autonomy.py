@@ -326,6 +326,7 @@ class AutonomousRun:
     def execute_modules(self):
         """No dependent work begins until its module and all earlier gates pass."""
         checked=[]
+        diagnosis_cache={}
         for number,module in enumerate(self.workflow['modules'],1):
             self.core.checkpoint(); self.unchanged()
             self.module=module
@@ -371,6 +372,20 @@ class AutonomousRun:
                 except ProposalRejected as exc:
                     current_failure=self.latest.get('output','') if self.latest.get('returncode') not in (None,0) else ''
                     feedback=truncate(current_failure or review_failure,9000)+'\nVORSCHLAGFEHLER: '+str(exc)
+                if attempt < self.limits['repairs'] and self.core.config.get('repair_diagnosis',True) and self.latest.get('returncode') not in (None,0):
+                    self.unchanged()
+                    current=self.core.read_files(module['files']+module['references'])
+                    if self.core.truncated: raise RunStopped('blocked','Reparaturdiagnose benötigt vollständige Moduldateien.')
+                    key=digest(canonical({'module':module['id'],'source':current,'test':self.latest.get('output','')}))
+                    reused=key in diagnosis_cache
+                    if not reused:
+                        diagnosis=self.core.chat('planner','DIAGNOSE A FAILED MODULE, do not create code. Determine the root cause from actual source and failing test. Return a short plan of precise repairs including affected expressions, files limited to the module. Do not repeat the feature specification or propose changing tests.\nCONTRACT:\n'+module['contract']+'\nFAILED TEST:\n'+self.latest.get('output','')+'\nSOURCE:\n'+'\n\n'.join('FILE '+p+'\n'+text for p,text in current.items()),self.model)
+                        plan=diagnosis.get('plan')
+                        if not isinstance(plan,list) or not 1<=len(plan)<=6 or not all(isinstance(p,str) and len(p)<=1500 for p in plan):raise RunStopped('blocked','Kein gültiger begrenzter Reparaturplan.')
+                        diagnosis_cache[key]=plan
+                    self.unchanged();self.core.checkpoint()
+                    feedback+='\nROOT CAUSE AND REPAIR PLAN (do not change tests):\n'+'\n'.join(diagnosis_cache[key])
+                    self.receipt.setdefault('repair_diagnoses',[]).append({'module':module['id'],'input_sha256':key,'reused':reused,'plan':diagnosis_cache[key]})
                 self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
                 self.save()
                 if attempt==self.limits['repairs']:
