@@ -1,5 +1,13 @@
 # Konsolidierter Stand
 
+## Normaler Windows-Start
+
+Der Starter überspringt VS-Codes optionale Willkommensseite und Release Notes.
+Bei fehlendem LOCALAPPDATA verwendet er den normalen lokalen Benutzerprofilpfad.
+Der normale CodeStudio-Profilordner bleibt erhalten; Arbeitsbereichsvertrauen
+wird nicht abgeschaltet. Diese Startkorrektur ergänzt den unten dokumentierten
+Kernstand und wird mit einem eigenen Startregressionstest geprüft.
+
 Die ausführbaren Quellen des CodeStudio-Kerns und der VS-Code-Erweiterung entsprechen dem
 TobyKi-Unterbaum bei `b7270bb3ef8133319b2161af8a06981f2e721e56`.
 TobyKi enthält diesen unveränderten Unterbaum auch bei
