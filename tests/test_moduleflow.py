@@ -65,3 +65,10 @@ class ModuleTests(unittest.TestCase):
   run=self.run_new()
   with patch.object(CodeStudioCore,'chat',side_effect=[change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,{'verdict':'reject','issues':['missing original feature'],'summary':'incomplete'}]):result=run.execute()['receipt']
   self.assertEqual(result['status'],'failed');self.assertTrue(result['rollback_verified'])
+
+ def test_invalid_repair_keeps_original_test_diagnosis(self):
+  run=self.run_new(2);run.core.config['max_review_rounds']=0;prompts=[]
+  replies=iter([change('a=1\nb=0\n'),change('a=1\nb=0\n'),change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,OK])
+  def chat(role,prompt,model):prompts.append(prompt);return next(replies)
+  with patch.object(CodeStudioCore,'chat',side_effect=chat):result=run.execute()['receipt']
+  self.assertEqual(result['status'],'succeeded');self.assertIn('a must equal 2',prompts[2]);self.assertIn('Keine effektive',prompts[2])

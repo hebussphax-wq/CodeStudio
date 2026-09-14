@@ -353,7 +353,8 @@ class AutonomousRun:
                         self.save(); break
                     feedback=test.get('output','Test fehlgeschlagen')
                 except ProposalRejected as exc:
-                    feedback=str(exc)
+                    current_failure=self.latest.get('output','') if self.latest.get('returncode') not in (None,0) else ''
+                    feedback=truncate(current_failure,9000)+'\nVORSCHLAGFEHLER: '+str(exc)
                 self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
                 self.save()
                 if attempt==self.limits['repairs']:
