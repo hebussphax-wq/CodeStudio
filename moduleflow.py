@@ -1,6 +1,7 @@
 """Caller-bound module contracts: models cannot expand writes or select commands."""
 import copy
 from safety import relative, ensure_source_text
+MAX_REFERENCES = 24
 
 def normalize_workflow(value, test_count, max_steps, allow_pending_tests=False):
     if not isinstance(value, dict) or value.get('schema') != 'codestudio.modules.v1':
@@ -17,7 +18,7 @@ def normalize_workflow(value, test_count, max_steps, allow_pending_tests=False):
         if not isinstance(contract,str) or not contract.strip() or len(contract)>10000:
             raise ValueError('Begrenzter Modulvertrag erforderlich.')
         ensure_source_text(contract)
-        for values,limit in ((paths,4),(refs,12)):
+        for values,limit in ((paths,4),(refs,MAX_REFERENCES)):
             if not isinstance(values,list) or len(values)>limit or not all(isinstance(p,str) for p in values):
                 raise ValueError('Begrenzte Modulpfade erforderlich.')
             if len({relative(p).casefold() for p in values})!=len(values): raise ValueError('Mehrdeutige Modulpfade.')

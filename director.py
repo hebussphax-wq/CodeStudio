@@ -1,5 +1,5 @@
 """Brief-to-workflow planning. Model output selects files, never executable commands."""
-from moduleflow import normalize_workflow
+from moduleflow import normalize_workflow, MAX_REFERENCES
 from safety import relative, ensure_source_text
 
 STRINGS = {'type': 'array', 'items': {'type': 'string'}}
@@ -20,7 +20,7 @@ DIRECTOR_SCHEMA = {
                 'outcomes': {'type': 'array', 'items': DESCRIPTION, 'minItems': 1, 'maxItems': 8,
                              'description': 'Observable module results, including exported API and expected behavior.'},
                 'files': {**STRINGS, 'minItems': 1, 'maxItems': 4},
-                'references': {**STRINGS, 'maxItems': 12},
+                'references': {**STRINGS, 'maxItems': MAX_REFERENCES},
                 'depends_on': STRINGS,
                 'tests': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0}},
             }, 'required': ['id', 'contract', 'outcomes', 'files', 'references', 'depends_on', 'tests']}}
@@ -67,7 +67,7 @@ def description(value, path):
     ensure_source_text(text)
     return text
 
-def validate_director(value, test_count, max_steps, protected, existing, *, final_tests=True, required_files=()):
+def validate_director(value, test_count, max_steps, protected, existing, *, final_tests=True, required_files=(), retained_files=()):
     if not isinstance(value, dict): raise ValueError('Arbeitsplan muss ein Objekt sein.')
     for key, low, high in [('acceptance', 1, 16), ('assumptions', 0, 8), ('questions', 0, 4)]:
         rows = value.get(key)
@@ -102,11 +102,13 @@ def validate_director(value, test_count, max_steps, protected, existing, *, fina
         # Dependencies are readable even when the model forgets to list their exports.
         refs = list(dict.fromkeys(module['references'] + [p for dep in module['depends_on'] for p in earlier[dep]]))
         refs = [p for p in refs if p not in module['files']]
-        if len(refs) > 12 or any(p not in available for p in refs):
+        if len(refs) > MAX_REFERENCES or any(p not in available for p in refs):
             raise ValueError('Lesekontext fehlt, ist zukünftig oder überschreitet das Modulbudget.')
         module['references'] = refs
         earlier[module['id']] = module['files']
         available.update(module['files'])
+    retained=set(retained_files)-{p for m in flow['modules'] for p in m['files']}
+    if retained:raise PlanValidationError('retained_files','Gesicherte Kandidatendateien müssen erneut geprüft werden: '+', '.join(sorted(retained)))
     missing=missing_artifacts(flow,required_files,existing)
     if missing:raise PlanValidationError('deliverables','Fehlende Lieferdateien ohne erzeugendes Modul: '+', '.join(missing))
     # A planner cannot silently omit any caller-selected final gate.

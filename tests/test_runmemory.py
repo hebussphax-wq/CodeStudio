@@ -153,6 +153,34 @@ class RunMemoryTests(unittest.TestCase):
         self.assertTrue((self.project/'index.html').exists());self.assertTrue((self.project/'style.css').exists())
         self.assertEqual(r['test']['returncode'],0)
 
+    def test_complete_failed_plan_proposal_revalidated_without_new_planner_call(self):
+        (self.project/'README.md').write_text('## Required files\n- index.html, style.css: frontend\n')
+        with patch('director.required_artifacts',return_value={}):first,r=self.fail_run()
+        complete=workflow();complete['modules'][-1]['files']+=['index.html','style.css']
+        r['planning_failures']=[{'response_preview':canonical(complete).decode('utf8'),
+            'response_sha256':digest(canonical(complete)),'preview_truncated':False}]
+        first.path.write_bytes(canonical(r))
+        replies=iter([{'edits':[{'path':'values.py','op':'write','content':'def double(n): return n*2\n'}]},OK,
+            {'edits':[{'path':'index.html','op':'create','content':'<!doctype html><p>Done</p>'},
+                      {'path':'style.css','op':'create','content':'p { color: black; }'}]},OK,OK])
+        roles=[]
+        def answer(role,*a):roles.append(role);return next(replies)
+        second=self.make_run(resume_from=first.id,changed_approach='Revalidate retained complete plan after runtime correction')
+        with patch.object(CodeStudioCore,'chat',side_effect=answer):r=second.execute()['receipt']
+        self.assertEqual(r['status'],'succeeded',r.get('error'))
+        self.assertTrue(r['resume']['reused_plan_candidate']);self.assertNotIn('planner',roles)
+
+    def test_test_failure_survives_a_later_proposal_failure(self):
+        first,r=self.fail_run()
+        second=self.make_run(resume_from=first.id,changed_approach='Repair original observed error',limits={'repairs':0})
+        with patch.object(CodeStudioCore,'chat',side_effect=ValueError('bad proposal schema')):r=second.execute()['receipt']
+        p=load_candidate(second.core.runs,second.id,second.core.workspace,self.config['tests'])
+        kinds={x['kind'] for x in p['failure_analysis']}
+        self.assertIn('assertion',kinds)
+        observed=next(x for x in p['failure_analysis'] if x['kind']=='assertion')
+        self.assertEqual(observed['source_run'],first.id)
+        self.assertTrue(r['rollback_verified'])
+
     def test_reviewer_opinion_does_not_block_unchanged_recheck(self):
         flow={'schema':'codestudio.modules.v1','modules':[{'id':'app','contract':'show doubles as string',
             'files':['app.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]}

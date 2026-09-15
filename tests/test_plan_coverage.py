@@ -14,6 +14,19 @@ class PlanCoverageTests(unittest.TestCase):
     def test_existing_artifact_does_not_force_artificial_write(self):
         plan=validate_director(workflow(),1,9,{'test_app.py'},['test_app.py','index.html'],required_files=['index.html'])
         self.assertEqual(len(plan['modules']),2)
+    def test_replan_cannot_orphan_restored_candidate_files(self):
+        with self.assertRaisesRegex(PlanValidationError,'retained_files'):
+            validate_director(workflow(),1,9,{'test_app.py'},['test_app.py','old.py'],retained_files=['old.py'])
+
+    def test_consistent_reference_capacity_handles_thirteen_required_files(self):
+        from moduleflow import normalize_workflow, MAX_REFERENCES
+        value=workflow();refs=['test'+str(i)+'.py' for i in range(13)]
+        value['modules'][0]['references']=refs
+        flow=validate_director(value,1,9,{'test_app.py'},['test_app.py']+refs)
+        self.assertEqual(len(flow['modules'][0]['references']),13)
+        self.assertEqual(normalize_workflow(flow,1,9,allow_pending_tests=True),flow)
+        self.assertEqual(MAX_REFERENCES,24)
+
     def test_actual_producers_cover_contract(self):
         value=workflow();value['modules'][-1]['files']+=['index.html','style.css']
         plan=validate_director(value,1,9,{'test_app.py'},['test_app.py'],required_files=['index.html','style.css'])

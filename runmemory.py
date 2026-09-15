@@ -6,6 +6,14 @@ from moduleflow import normalize_workflow
 
 MAX_BYTES = 4 * 1024 * 1024
 
+def failure_history(*groups):
+    unique={}
+    for group in groups:
+        for row in group:
+            key=row.get('fingerprint') or digest(canonical(row))
+            unique.pop(key,None);unique[key]=row
+    return list(unique.values())[-12:]
+
 def run_id(value):
     if not isinstance(value, str) or not re.fullmatch(r'[a-f0-9]{32}', value):
         raise ValueError('Ungültige Quellauftrags-ID.')
@@ -34,7 +42,8 @@ def save_candidate(run):
         'plan':getattr(run,'original_plan',None),
         'tests_sha256':run.receipt['tests_sha256'], 'basis':basis, 'protected':run.protected,
         'files':files, 'model':run.model, 'options':run.core.config.get('options',{}),
-        'failure_analysis':run.receipt.get('failure_analysis',[])[-12:],
+        'failure_analysis':failure_history(getattr(run,'resume_evidence',[]),
+            [{**row,'source_run':run.id} for row in run.receipt.get('failure_analysis',[])]),
         'failed_candidates':run.failed_candidates[-48:], 'status':'unverified_candidate'}
     raw = canonical(payload)
     if len(raw)>MAX_BYTES: raise ValueError('Kandidatensicherung überschreitet 4 MiB.')
@@ -46,7 +55,7 @@ def save_candidate(run):
         'status':'unverified_candidate', 'files':list(files)}
     return payload
 
-def load_candidate(runs, source_id, workspace, tests, max_steps=12):
+def load_candidate(runs, source_id, workspace, tests, max_steps=12, _depth=0):
     source_id=run_id(source_id)
     receipt_path=runs / ('autonomous-' + source_id + '.json')
     if receipt_path.stat().st_size>16*MAX_BYTES: raise ValueError('Quellbeleg zu groß.')
@@ -80,6 +89,24 @@ def load_candidate(runs, source_id, workspace, tests, max_steps=12):
         if (digest(content.encode('utf8')) if content is not None else None)!=entry['after']:
             raise ValueError('Kandidateninhalt beschädigt: '+rel)
         if rel not in p['basis'] or entry['before']!=p['basis'][rel]: raise ValueError('Kandidatenbasis unvollständig.')
+    # Reuse complete prior model plans only when their recorded content hash matches.
+    # They remain proposals and must pass the current planner validator again.
+    previous=receipt.get('resume',{}).get('source_run')
+    if previous and previous!=source_id and _depth<3:
+        try:
+            older=load_candidate(runs,previous,workspace,tests,max_steps,_depth+1)
+            p['failure_analysis']=failure_history(
+                [{**row,'source_run':row.get('source_run',previous)} for row in older.get('failure_analysis',[])],p.get('failure_analysis',[]))
+        except (OSError,ValueError,KeyError,TypeError):
+            pass  # Incompatible older evidence is never authority for this candidate.
+    p['_planning_candidates']=[]
+    for row in receipt.get('planning_failures',[])[-4:]:
+        try:
+            if row.get('preview_truncated'): continue
+            proposal=json.loads(row['response_preview'])
+            if digest(canonical(proposal))==row['response_sha256'] and isinstance(proposal,dict):
+                p['_planning_candidates'].append(proposal)
+        except (KeyError,TypeError,ValueError): pass
     return p
 
 def candidate_signature(run, final_state):

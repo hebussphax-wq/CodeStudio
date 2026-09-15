@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from core import CodeStudioCore, truncate, SCHEMA, ModelOutputError
 from workflow import normalize_job, job_result
 from runmemory import save_candidate, load_candidate, candidate_signature, record_success, run_id
-from moduleflow import normalize_workflow
+from moduleflow import normalize_workflow, MAX_REFERENCES
 from failureanalysis import analyze_failure, blocker_report
 from processrunner import run_command, ProcessTreeUncertain
 from safety import WorkspaceTransaction, atomic_bytes, canonical, digest, identity, relative, redact, ensure_source_text, safe_path
@@ -560,6 +560,8 @@ class AutonomousRun:
         if missing:
             self.receipt['resume']['replanned_missing_artifacts']=missing
             self.core.log('Autonom: gesicherter Plan enthält keine Erzeuger für '+', '.join(missing)+'; vollständig neu planen')
+            if p.get('_planning_candidates'):
+                self.recovered_plan=p['_planning_candidates'][-1]
             self.plan_modules(self.core.file_tree())
         save_candidate(self);self.save()
 
@@ -614,6 +616,8 @@ class AutonomousRun:
                   '\nFILE TREE:\n'+'\n'.join(tree)+'\nOMITTED FROM PLANNING CONTEXT (still protected; reference relevant files in module references):\n'+json.dumps(omitted)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
                   '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
         prompt+='\nEXPLICIT FILE-CONTRACT OUTPUTS (every absent file needs a producing module):\n'+json.dumps(required_files)
+        if self.request.get('resume_from') and not repair_feedback:
+            prompt+='\nRESTORED CANDIDATE FILES (include every file in a module; unchanged files may be revalidated without edits):\n'+json.dumps(sorted(self.tx.files))
         if getattr(self,'resume_evidence',None):prompt+='\nPRIOR OBSERVED FAILURES (repair these within the original task):\n'+json.dumps(self.resume_evidence)
         if repair_feedback:
             prompt += ('\nCURRENT TEST DEFECTS:\n'+repair_feedback+
@@ -635,10 +639,16 @@ class AutonomousRun:
                 self.core.log('Autonom: Arbeitsplan aus Auftrag und Projektverträgen erstellen')
                 value = None
                 try:
-                    value = self.core.chat('planner', prompt+feedback, self.model)
+                    if attempt==0 and getattr(self,'recovered_plan',None) is not None:
+                        value=self.recovered_plan;self.recovered_plan=None
+                        self.receipt['resume']['reused_plan_candidate']=True
+                        self.core.log('Autonom: vollständig gespeicherten Planvorschlag gegen die korrigierten Regeln erneut prüfen')
+                    else:
+                        value = self.core.chat('planner', prompt+feedback, self.model)
                     self.unchanged()
                     workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree,
-                                                 final_tests=not interim_repair, required_files=() if repair_feedback else required_files)
+                                                 final_tests=not interim_repair, required_files=() if repair_feedback else required_files,
+                                                 retained_files=self.tx.files if self.request.get('resume_from') and not repair_feedback else ())
                     # Requirements and selected executable test contracts must reach the coder
                     # even when the director forgets to repeat them in its references field.
                     for m in workflow['modules']:
@@ -652,7 +662,7 @@ class AutonomousRun:
                                 except (ValueError, OSError): pass
                         refs = list(dict.fromkeys(m['references']+required))
                         m['references'] = [p for p in refs if p not in m['files']]
-                        if len(m['references']) > 12: raise ValueError('Pflicht-Lesekontext überschreitet zwölf Modulreferenzen.')
+                        if len(m['references']) > MAX_REFERENCES: raise ValueError('Pflicht-Lesekontext überschreitet '+str(MAX_REFERENCES)+' Modulreferenzen.')
                     writes = {p for m in workflow['modules'] for p in m['files']}
                     if repair_feedback and not writes.issubset(self.authorized_files):
                         raise ValueError('Gesamtreparatur darf den ursprünglichen Schreibbereich nicht erweitern.')

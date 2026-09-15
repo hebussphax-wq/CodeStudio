@@ -297,3 +297,7 @@ Erfolgreiche Wiederaufnahmen erzeugen einen lokalen Experience-Beleg mit Quellla
 Der normale VS-Code-Start speichert Belege außerhalb des Projekts. Bei älteren CLI-Konfigurationen mit Belegspeicher innerhalb des Projekts bleibt der vorhandene Ablauf erhalten, meldet aber ausdrücklich, dass keine sichere Kandidaten-Wiederaufnahme verfügbar ist.
 
 Explizite Markdown-Dateiverträge (z. B. „Required files“ oder „Dateien und prüfbarer Vertrag“, Aufzählung „index.html, style.css: Beschreibung“) werden vor dem Coden gegen die erzeugenden Module geprüft. Freie Prosa und eingerückte/fenced Beispiele sind kein automatischer Dateivertrag. Ein alter gespeicherter Plan, der fehlende Pflichtdateien nicht abdeckt, wird bei der Wiederaufnahme aus dem Originalauftrag neu geplant; Kandidaten und ursprüngliche Prüfverträge bleiben erhalten.
+
+Module können bis zu 24 eindeutige Lesereferenzen enthalten. Die Grenzen für vollständig gelesene Dateien, Gesamtbytes und Modellkontext bleiben bestehen. Eine Wiederaufnahme-Neuplanung muss alle bereits restaurierten Kandidatendateien ausdrücklich einem Modul zur erneuten Prüfung zuordnen.
+
+Ist ein vollständiger früherer Planvorschlag mit passender Inhaltsprüfsumme im Quellbeleg erhalten, wird er bei der Wiederaufnahme zuerst gegen die aktuellen Regeln geprüft. Ein gültiger Vorschlag spart einen erneuten Planeraufruf; ein ungültiger Vorschlag erhält keine Freigabe.
