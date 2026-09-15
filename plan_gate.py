@@ -1,8 +1,10 @@
 """SoftKI plan gate: executable checks before coder (script-before-model)."""
 from __future__ import annotations
 
+import os
 import pathlib
 import re
+import sys
 from typing import Any
 
 QUANTIFIER_RE = re.compile(
@@ -13,8 +15,125 @@ QUANTIFIER_RE = re.compile(
     r")\b"
 )
 
+# Unix-only first tokens that SoftKI planners sometimes emit; rewrite on Windows.
+_UNIX_ONLY_CMDS = frozenset({"ls", "cat", "true", "false", "test", "grep", "egrep", "fgrep"})
 
-def normalize_acceptance(raw: Any) -> dict:
+
+def _path_exists_argv(workspace: pathlib.Path, rel: str) -> list[str]:
+    """Build python argv that exits 0 iff workspace-relative path is a file."""
+    rel_n = rel.replace("\\", "/").lstrip("./")
+    p = (workspace / rel_n).resolve()
+    try:
+        p.relative_to(workspace.resolve())
+    except ValueError as exc:
+        raise ValueError("Check-Pfad ausserhalb Workspace: " + rel_n) from exc
+    code = (
+        "import pathlib,sys;"
+        f"sys.exit(0 if pathlib.Path({str(p)!r}).is_file() else 1)"
+    )
+    return [sys.executable, "-c", code]
+
+
+def _grep_content_argv(workspace: pathlib.Path, argv: list[str]) -> list[str]:
+    """Convert grep-like argv to python -c content check (exit 0/1), no shell."""
+    args = list(argv[1:])
+    fixed = False
+    while args and args[0].startswith("-"):
+        opt = args.pop(0)
+        if opt in ("-q", "--quiet", "--silent"):
+            pass
+        elif opt in ("-F", "--fixed-strings"):
+            fixed = True
+        elif opt in ("-e", "--regexp") and args:
+            break
+        elif opt == "--":
+            break
+    if not args:
+        raise ValueError("grep-Check braucht Muster und Datei.")
+    pattern = args[0]
+    if len(args) < 2:
+        raise ValueError("grep-Check braucht Dateipfad.")
+    rel = args[1].replace("\\", "/").lstrip("./")
+    p = (workspace / rel).resolve()
+    try:
+        p.relative_to(workspace.resolve())
+    except ValueError as exc:
+        raise ValueError("Check-Pfad ausserhalb Workspace: " + rel) from exc
+    code = (
+        "import pathlib,sys,re;"
+        f"p=pathlib.Path({str(p)!r});"
+        "t=p.read_text(encoding='utf-8',errors='replace') if p.is_file() else '';"
+        f"pat={pattern!r}; fixed={fixed!r};"
+        "ok=(pat in t) if fixed else bool(re.search(pat,t));"
+        "sys.exit(0 if ok else 1)"
+    )
+    return [sys.executable, "-c", code]
+
+
+def rewrite_check_for_windows(check: dict, workspace: pathlib.Path | None = None) -> dict:
+    """On Windows, rewrite Unix argv checks to path or python argv forms."""
+    if os.name != "nt":
+        return check
+    if "argv" not in check:
+        return check
+    argv = list(check["argv"])
+    if not argv:
+        return check
+    head = pathlib.Path(argv[0]).name.lower()
+    if head.endswith(".exe"):
+        head = head[:-4]
+    name = check.get("name") or "check"
+    timeout = check.get("timeout_sec", 300)
+
+    # test -f / test -e PATH -> path-check form (consumed by _bind_path_check)
+    if head == "test" and len(argv) >= 3 and argv[1] in ("-f", "-e"):
+        rel = argv[2].replace("\\", "/").lstrip("./")
+        return {"name": name, "path": rel}
+
+    # grep -> python content check (needs workspace; defer if unknown)
+    if head in ("grep", "egrep", "fgrep"):
+        if workspace is None:
+            return check
+        return {
+            "name": name,
+            "argv": _grep_content_argv(workspace, argv),
+            "timeout_sec": timeout if isinstance(timeout, int) else 300,
+        }
+
+    if head == "true" and len(argv) == 1:
+        return {
+            "name": name,
+            "argv": [sys.executable, "-c", "raise SystemExit(0)"],
+            "timeout_sec": 60,
+        }
+
+    if head == "false" and len(argv) == 1:
+        return {
+            "name": name,
+            "argv": [sys.executable, "-c", "raise SystemExit(1)"],
+            "timeout_sec": 60,
+        }
+
+    if head in ("ls", "cat") and len(argv) >= 2:
+        rel = None
+        for a in reversed(argv[1:]):
+            if not a.startswith("-"):
+                rel = a.replace("\\", "/").lstrip("./")
+                break
+        if rel:
+            return {"name": name, "path": rel}
+
+    if head in _UNIX_ONLY_CMDS:
+        raise ValueError(
+            "SoftKI-Check auf Windows: Unix-Befehl nicht nutzbar ("
+            + argv[0]
+            + "). path oder python argv verwenden."
+        )
+
+    return check
+
+
+def normalize_acceptance(raw: Any, workspace: pathlib.Path | None = None) -> dict:
     """Accept legacy list[str] or SoftKI {checks, prose}."""
     if raw is None:
         return {"checks": [], "prose": []}
@@ -50,6 +169,7 @@ def normalize_acceptance(raw: Any) -> dict:
                 row["timeout_sec"] = to
             else:
                 row["timeout_sec"] = 300
+            row = rewrite_check_for_windows(row, workspace)
             checks.append(row)
         elif isinstance(path, str) and path.strip():
             checks.append({"name": name, "path": path.strip().replace("\\", "/")})
@@ -79,21 +199,27 @@ def _bind_path_check(workspace: pathlib.Path, name: str, rel: str) -> dict:
         p.relative_to(workspace.resolve())
     except ValueError as exc:
         raise ValueError("Check-Pfad ausserhalb Workspace: " + rel) from exc
-    if not p.is_file():
-        raise ValueError("Check-Datei fehlt: " + rel)
     suf = p.suffix.lower()
-    if suf == ".py":
-        if "tests" in p.parts:
-            mod = ".".join(p.with_suffix("").relative_to(workspace).parts)
-            return {
-                "name": name,
-                "argv": ["python", "-m", "unittest", mod, "-v"],
-                "timeout_sec": 300,
-            }
-        return {"name": name, "argv": ["python", str(p)], "timeout_sec": 300}
-    if suf in (".cjs", ".mjs", ".js"):
+    # SoftKI path form for runnable tests (must exist now)
+    if suf in (".py", ".cjs", ".mjs", ".js"):
+        if not p.is_file():
+            raise ValueError("Check-Datei fehlt: " + rel)
+        if suf == ".py":
+            if "tests" in p.parts:
+                mod = ".".join(p.with_suffix("").relative_to(workspace).parts)
+                return {
+                    "name": name,
+                    "argv": ["python", "-m", "unittest", mod, "-v"],
+                    "timeout_sec": 300,
+                }
+            return {"name": name, "argv": ["python", str(p)], "timeout_sec": 300}
         return {"name": name, "argv": ["node", "--test", str(p)], "timeout_sec": 300}
-    raise ValueError("Unsupported check path type: " + rel)
+    # SoftKI path-check form for existence (from rewritten test -f/-e); may appear after coder
+    return {
+        "name": name,
+        "argv": _path_exists_argv(workspace, rel),
+        "timeout_sec": 60,
+    }
 
 
 def ensure_checks(
@@ -103,7 +229,7 @@ def ensure_checks(
 ) -> list[dict]:
     """Return runnable test profiles: config tests and/or plan checks."""
     existing = list(existing_tests or [])
-    acc = normalize_acceptance(plan.get("acceptance"))
+    acc = normalize_acceptance(plan.get("acceptance"), workspace=workspace)
     plan["acceptance"] = acc
     out: list[dict] = []
     seen: set[str] = set()
@@ -124,6 +250,8 @@ def ensure_checks(
             })
 
     for c in acc["checks"]:
+        # Re-apply Windows rewrite with real workspace (grep needs it)
+        c = rewrite_check_for_windows(dict(c), workspace)
         if "argv" in c:
             add({
                 "name": c["name"],
@@ -146,3 +274,4 @@ def acceptance_for_prompt(acc: Any) -> str:
         else:
             lines.append("CHECK " + c["name"] + ": " + str(c.get("path")))
     return "\n".join(lines)
+

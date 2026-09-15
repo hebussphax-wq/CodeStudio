@@ -10,7 +10,25 @@ DESCRIPTION = {'type': 'string',
 DIRECTOR_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'properties': {
-        'acceptance': {'type': 'array', 'items': DESCRIPTION, 'minItems': 1, 'maxItems': 16},
+        # SoftKI: list[str] legacy OR {checks, prose} object (planner may emit either).
+        'acceptance': {'oneOf': [
+            {'type': 'array', 'items': DESCRIPTION, 'minItems': 1, 'maxItems': 16},
+            {'type': 'object', 'additionalProperties': False,
+             'properties': {
+                 'prose': {'type': 'array', 'items': DESCRIPTION, 'maxItems': 16},
+                 'checks': {'type': 'array', 'maxItems': 16, 'items': {
+                     'oneOf': [
+                         {'type': 'string'},
+                         {'type': 'object', 'additionalProperties': False,
+                          'properties': {
+                              'name': {'type': 'string'},
+                              'argv': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1},
+                              'path': {'type': 'string'},
+                              'timeout_sec': {'type': 'integer', 'minimum': 1, 'maximum': 3600},
+                          }},
+                     ]}},
+             }, 'required': ['checks', 'prose']},
+        ]},
         'assumptions': {**STRINGS, 'maxItems': 8},
         'questions': {**STRINGS, 'maxItems': 4, 'description': 'Only indispensable external facts or permissions that prevent safe implementation. Empty for reversible design choices; put those decisions in assumptions.'},
         'modules': {'type': 'array', 'minItems': 1, 'maxItems': 12, 'items': {
@@ -67,15 +85,70 @@ def description(value, path):
     ensure_source_text(text)
     return text
 
+
+def acceptance_rows_for_validation(raw):
+    """Normalize SoftKI acceptance for description checks without mutating the plan.
+
+    Returns (rows, kind) where kind is 'list', 'prose', or 'checks'.
+    - list[str]: legacy director form
+    - dict with non-empty prose: use prose for description validation
+    - dict with empty prose but checks: use check names (light validation; names may be short identifiers)
+    """
+    if isinstance(raw, list):
+        return raw, 'list'
+    if not isinstance(raw, dict):
+        raise ValueError('Ungültige Planangaben: acceptance')
+    prose = raw.get('prose', [])
+    checks = raw.get('checks', [])
+    if not isinstance(prose, list) or not isinstance(checks, list):
+        raise ValueError('Ungültige Planangaben: acceptance')
+    prose_rows = [x for x in prose if isinstance(x, str) and str(x).strip()]
+    if prose_rows:
+        return prose_rows, 'prose'
+    names = []
+    for item in checks:
+        if isinstance(item, str) and item.strip():
+            names.append(item.strip())
+            continue
+        if isinstance(item, dict):
+            name = str(item.get('name') or '').strip()
+            if name:
+                names.append(name)
+                continue
+            path = item.get('path')
+            if isinstance(path, str) and path.strip():
+                names.append(path.strip())
+                continue
+            argv = item.get('argv')
+            if isinstance(argv, list) and argv:
+                names.append(' '.join(str(a) for a in argv if a))
+                continue
+        raise ValueError('Ungültige Planangaben: acceptance')
+    if names:
+        return names, 'checks'
+    raise ValueError('Ungültige Planangaben: acceptance')
+
+
 def validate_director(value, test_count, max_steps, protected, existing, *, final_tests=True, required_files=(), retained_files=()):
     if not isinstance(value, dict): raise ValueError('Arbeitsplan muss ein Objekt sein.')
-    for key, low, high in [('acceptance', 1, 16), ('assumptions', 0, 8), ('questions', 0, 4)]:
+    # SoftKI Planvertrag: acceptance may be list OR {checks, prose}. Preserve object on plan.
+    acc_rows, acc_kind = acceptance_rows_for_validation(value.get('acceptance'))
+    if not 1 <= len(acc_rows) <= 16 or any(
+            not isinstance(x, str) or not x.strip() or len(x) > 2000 for x in acc_rows):
+        raise ValueError('Ungültige Planangaben: acceptance')
+    for i, x in enumerate(acc_rows):
+        if acc_kind == 'checks':
+            # Check names are identifiers; skip category/filename prose gate.
+            ensure_source_text(x.strip())
+        else:
+            ensure_source_text(x)
+            description(x, 'acceptance['+str(i)+']')
+    for key, low, high in [('assumptions', 0, 8), ('questions', 0, 4)]:
         rows = value.get(key)
         if not isinstance(rows, list) or not low <= len(rows) <= high or any(
                 not isinstance(x, str) or not x.strip() or len(x) > 2000 for x in rows):
             raise ValueError('Ungültige Planangaben: '+key)
         for x in rows: ensure_source_text(x)
-    for i,x in enumerate(value['acceptance']): description(x, 'acceptance['+str(i)+']')
     import copy
     modules = copy.deepcopy(value.get('modules'))
     if not isinstance(modules, list): raise ValueError('Modulplan erforderlich.')
