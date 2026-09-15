@@ -543,6 +543,10 @@ class AutonomousRun:
                         try:
                             diagnosis=self.core.chat('planner','DIAGNOSE A FAILED MODULE, do not create code. Determine the root cause from actual source and failing test. Return at most 3 short repair steps (600 characters each) including affected expressions, files limited to the module. Do not repeat the feature specification or propose changing tests.\nCONTRACT:\n'+module['contract']+'\nFAILED TEST:\n'+self.latest.get('output','')+'\nSOURCE:\n'+'\n\n'.join('FILE '+p+'\n'+text for p,text in current.items()),self.model)
                             plan=diagnosis.get('plan')
+                            affected=diagnosis.get('files')
+                            if not isinstance(affected,list) or not affected or any(
+                                    not isinstance(p,str) or p not in module['files'] for p in affected):
+                                raise ValueError('Diagnose darf nur explizite Schreibdateien des aktuellen Moduls betreffen.')
                             if not isinstance(plan,list) or not 1<=len(plan)<=3 or not all(isinstance(p,str) and p.strip() and len(p)<=600 for p in plan):
                                 raise ValueError('Diagnose benötigt 1–3 nichtleere Reparaturschritte mit höchstens 600 Zeichen.')
                             diagnosis_cache[key]=plan
@@ -556,7 +560,8 @@ class AutonomousRun:
                                 'action':'continue_bounded_coder_repair_with_original_test_failure'})
                     self.unchanged();self.core.checkpoint()
                     if diagnosis_cache[key]:
-                        feedback+='\nROOT CAUSE AND REPAIR PLAN (do not change tests):\n'+'\n'.join(diagnosis_cache[key])
+                        feedback+='\nUNVERIFIED DIAGNOSTIC HYPOTHESES (not established facts):\n'+'\n'.join(diagnosis_cache[key])
+                        feedback+='\nCheck these hypotheses against the current source and the exact original test failure above. Discard contradicted advice. The original contract and unchanged tests remain authoritative; never modify tests.'
                     self.receipt.setdefault('repair_diagnoses',[]).append({'module':module['id'],'input_sha256':key,'reused':reused,'plan':diagnosis_cache[key]})
                 self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
                 self.save()

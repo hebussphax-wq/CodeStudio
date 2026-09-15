@@ -7,9 +7,10 @@ from director import validate_director, DIRECTOR_SCHEMA
 OK={'verdict':'ok','issues':[],'summary':'matches contract'}
 def workflow():
     return {'acceptance':['Format doubled values'], 'assumptions':[], 'questions':[], 'modules':[
-        {'id':'values','contract':'values.py exports double(n) returning n*2.', 'files':['values.py'],
+        {'id':'values','contract':'values.py exports double(n) returning n*2.', 'outcomes':['Calling double(4) returns 8; negative inputs retain their sign.'], 'files':['values.py'],
          'references':['test_app.py'],'depends_on':[],'tests':[]},
         {'id':'app','contract':'app.py imports double from values and exports show(n) returning str(double(n)).',
+         'outcomes':['Calling show(4) returns the string "8"; show(-2) returns "-4".'],
          'files':['app.py'],'references':['test_app.py'],'depends_on':['values'],'tests':[0]}]}
 def create(path, content): return {'edits':[{'path':path,'op':'create','content':content}],'notes':''}
 
@@ -96,6 +97,7 @@ class DirectorTests(unittest.TestCase):
     def test_invalid_advisory_diagnosis_does_not_prevent_test_driven_repair(self):
         self.config['repair_diagnosis']=True
         plan=workflow();plan['modules']=[{'id':'app','contract':'app.py exports show(n) returning str(n*2).',
+            'outcomes':['Calling show(4) returns the string "8".'],
             'files':['app.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]
         replies=iter([plan,create('app.py','def show(n): return str(n*3)\n'),{'plan':['too long '*300]},
             {'edits':[{'path':'app.py','op':'write','content':'def show(n): return str(n*2)\n'}]},OK,OK])
@@ -111,8 +113,64 @@ class DirectorTests(unittest.TestCase):
         schema=run.core.output_schema('planner')
         self.assertEqual(schema['properties']['plan']['maxItems'],3)
         self.assertEqual(schema['properties']['plan']['items']['maxLength'],600)
+    def test_placeholder_plan_is_repaired_before_coding(self):
+        bad=workflow()
+        for m in bad['modules']: m['contract']='read-only'
+        replies=iter([bad,workflow(),create('values.py','def double(n): return n*2\n'),OK,
+                     create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        prompts=[]
+        def chat(role,prompt,model):
+            prompts.append((role,prompt))
+            if len(prompts)<=2:self.assertFalse((self.project/'values.py').exists())
+            return next(replies)
+        with patch.object(CodeStudioCore,'chat',side_effect=chat):r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'succeeded')
+        self.assertEqual([x[0] for x in prompts[:3]],['planner','planner','coder'])
+        self.assertEqual(len(r['planning_errors']),1)
+        self.assertIn('Calling double(4) returns 8',prompts[2][1])
+    def test_missing_outcomes_and_category_acceptance_rejected(self):
+        for kind in ('missing','empty','category','contract'):
+            value=workflow()
+            if kind=='missing':del value['modules'][0]['outcomes']
+            elif kind=='empty':value['modules'][0]['outcomes']=[]
+            elif kind=='category':value['acceptance']=['values']
+            else:value['modules'][0]['contract']='values.py'
+            with self.subTest(kind=kind),self.assertRaises(ValueError):
+                validate_director(value,1,6,['test_app.py'],['test_app.py'])
+    def test_repeated_placeholder_plans_stop_without_project_writes(self):
+        bad=workflow()
+        for m in bad['modules']:m['contract']='read-only'
+        with patch.object(CodeStudioCore,'chat',return_value=bad) as chat:
+            r=self.make_run(limits={'repairs':1}).execute()['receipt']
+        self.assertNotEqual(r['status'],'succeeded');self.assertEqual(chat.call_count,2)
+        self.assertFalse((self.project/'values.py').exists())
+    def test_diagnosis_cannot_target_tests_and_is_never_promoted_to_fact(self):
+        self.config['repair_diagnosis']=True
+        for affected in (['test_app.py'],['app.py']):
+            plan=workflow();plan['modules']=[{'id':'app','contract':'app.py exports show(n) returning str(n*2).',
+                'outcomes':['Calling show(4) returns the string "8".'],
+                'files':['app.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]
+            advice='Replace the expected value with the wrong value.'
+            replies=iter([plan,create('app.py','def show(n): return str(n*3)\n'),
+                {'plan':[advice],'files':affected},
+                {'edits':[{'path':'app.py','op':'write','content':'def show(n): return str(n*2)\n'}]},OK,OK])
+            prompts=[]
+            def chat(role,prompt,model):
+                if role=='coder':prompts.append(prompt)
+                return next(replies)
+            with self.subTest(affected=affected),patch.object(CodeStudioCore,'chat',side_effect=chat):
+                r=self.make_run().execute()['receipt']
+            self.assertEqual(r['status'],'succeeded')
+            self.assertIn('AssertionError',prompts[-1])
+            self.assertNotIn('ROOT CAUSE AND REPAIR PLAN',prompts[-1])
+            if affected==['test_app.py']:
+                self.assertNotIn(advice,prompts[-1]);self.assertEqual(len(r['diagnosis_errors']),1)
+            else:
+                self.assertIn('UNVERIFIED DIAGNOSTIC HYPOTHESES',prompts[-1]);self.assertIn(advice,prompts[-1])
+            (self.project/'app.py').unlink()
     def test_final_review_triggers_bounded_replanning_without_operator(self):
         repair=workflow();repair['modules']=[{'id':'repair','contract':'Add required description to app.py without changing show.',
+            'outcomes':['The module has a description and show(4) still returns "8".'],
             'files':['app.py'],'references':['test_app.py','values.py'],'depends_on':[],'tests':[0]}]
         replies=iter([workflow(),create('values.py','def double(n): return n*2\n'),OK,
             create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,
@@ -124,6 +182,7 @@ class DirectorTests(unittest.TestCase):
         self.assertIn('description',r['integration_repairs'][0]['feedback'])
     def test_integration_failure_in_earlier_module_is_replanned(self):
         repair=workflow();repair['modules']=[{'id':'repair-values','contract':'double(n) must return n*2.',
+            'outcomes':['Calling double(4) returns 8, and double(-2) returns -4.'],
             'files':['values.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]
         (self.project/'spec.md').write_text('Doubled means multiplied by two.')
         asset=b'\x89PNG\r\n\x1a\n\0'+b'x'*30000
@@ -172,6 +231,7 @@ class DirectorTests(unittest.TestCase):
         self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
         plan=workflow();plan['modules'][0]['tests']=[0]
         plan['modules'].insert(1,{'id':'extra','contract':'extra.py exports description="Doubler".',
+            'outcomes':['Importing description returns the string "Doubler".'],
             'files':['extra.py'],'references':[],'depends_on':['values'],'tests':[]})
         replies=iter([plan,create('values.py','def double(n): return n*2\n'),OK,
             create('extra.py','description="Doubler"\n'),OK,

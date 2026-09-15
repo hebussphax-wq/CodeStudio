@@ -187,6 +187,13 @@ Schreiben. Plan, Annahmen, Eingangsidentitäten und Workflowhash werden gespeich
 Wirklich fehlende Angaben werden als Rückfrage ausgegeben. Das alte Schrittprotokoll
 ist nur noch über planning=steps ausdrücklich auswählbar.
 
+Automatisch erzeugte Pläne müssen außerdem je Modul konkrete `outcomes` nennen.
+Verhaltensbeschreibung und beobachtbare Ergebnisse gelangen gemeinsam an Coder
+und Review. Bloße Modusbezeichnungen, Dateinamen und kurze Kategorien reichen
+nicht aus. Diese Strukturprüfung beweist noch keine inhaltliche Richtigkeit;
+ausführbare Tests und die abschließende Abnahme bleiben erforderlich. Explizite
+Caller-/Host-Workflows behalten ihr bisheriges Vertragsformat.
+
 VS Code: „Modul-Workflow laden“ liest eine JSON-Datei mit task, workflow und test_profiles. Der geöffnete Vertrag samt Programmen wird vor Start geprüft und freigegeben. Programme bleiben vom Auftraggeber definiert; das Modell kann keine Shell-Befehle auswählen. Ein Workflow beweist nur seine deklarierten Kriterien, nicht die Vollständigkeit jeder unklar formulierten Produktidee.
 
 „Grafik lokal mit ComfyUI erzeugen“ verwendet einen bereits laufenden lokalen ComfyUI-Dienst (Standard 127.0.0.1:8189), vorhandenen Checkpoint und ausschließlich Standardknoten. Es lädt keine Modelle oder Erweiterungen herunter. Der Auftrag wird mit Prompt-ID protokolliert. Erst fertige History, PNG-Prüfsummen, passende Abmessungen und zurückgelesener Datei-Hash ergeben succeeded. Nur neue PNG-Pfade im Projekt werden importiert. Bei unklarer Übermittlung wird nicht automatisch neu eingereiht. Grafiken sind getrennte Aufträge und werden bei einem späteren Code-Fehlschlag nicht entfernt. Hostgebundene Grafikerzeugung benötigt noch einen eigenen Hostvertrag.
@@ -205,5 +212,10 @@ Module QC displays source with real line breaks. A model rejection after passing
 QC now receives all module files and bounded read-only references. Factual observations precede the verdict, and a review rejection remains in repair feedback after a no-op. Host and direct coders share the same module prompt/schema. Model metadata must be interpreted with the active Ollama renderer. A visible `{{ .Prompt }}` template alone does not prove a broken chat setup: built-in renderers can take precedence. The local template-alias experiment did not establish a repair.
 
 After a failed module test, the planner diagnoses the actual source and test output before the coder attempts repair. The bounded diagnosis is cached by exact module source and failure output, so an unchanged no-op reuses the diagnosis instead of spending another analysis call. Diagnostics never grant new write paths or test-edit permission.
+
+Diagnostic file targets must belong to the current module's writable files.
+Out-of-scope advice is discarded, retaining the original test failure. Accepted
+diagnostic text is explicitly an unverified hypothesis, never an established root
+cause. The coder must check it against source and unchanged test requirements.
 
 The final module review includes unchanged declared module files and read-only dependencies, not only files written in the current run. Its complete file identities are recorded; count, per-file and total context limits fail closed instead of silently dropping dependencies.
