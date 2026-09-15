@@ -406,6 +406,7 @@ class AutonomousRun:
                        '\nPlan only repairs of these defects in these already authorized files: '+
                        json.dumps(sorted(self.authorized_files))+'. Preserve working behavior. Do not repeat completed implementation.')
         feedback = ''
+        invalid_plans = 0
         self.core.director_mode = True
         try:
             for attempt in range(self.limits['repairs']+1):
@@ -434,8 +435,32 @@ class AutonomousRun:
                         raise ValueError('Gesamtreparatur darf den ursprünglichen Schreibbereich nicht erweitern.')
                 except ValueError as exc:
                     self.receipt.setdefault('planning_errors', []).append(redact(str(exc)))
+                    raw_plan = canonical(value)
+                    redacted_plan = redact(raw_plan.decode('utf8'))
+                    preview = truncate(redacted_plan, 12000)
+                    self.receipt.setdefault('planning_failures', []).append({
+                        'attempt':attempt+1, 'model':getattr(self.core,'role_models',{}).get('planner',getattr(self.core,'fallback_model',None) or self.model),
+                        'path':getattr(exc,'path',None), 'error':redact(str(exc)),
+                        'response_sha256':digest(raw_plan), 'response_bytes':len(raw_plan),
+                        'response_preview':preview, 'preview_truncated':preview != redacted_plan})
                     self.save()
                     if attempt == self.limits['repairs']: raise
+                    invalid_plans += 1
+                    if invalid_plans >= 2 and 'planner' not in getattr(self.core,'role_models',{}):
+                        previous = getattr(self.core,'fallback_model',None) or self.model
+                        while self.fallback_index < len(self.fallbacks) and self.fallbacks[self.fallback_index] == previous:
+                            self.fallback_index += 1
+                        if self.fallback_index < len(self.fallbacks):
+                            self.core.checkpoint(); self.unchanged()
+                            replacement=self.fallbacks[self.fallback_index];self.fallback_index+=1
+                            self.core.fallback_model=replacement
+                            self.receipt.setdefault('model_switches',[]).append({'phase':'planning',
+                                'from':previous,'to':replacement,'reason':'two_invalid_director_plans',
+                                'remaining_model_calls':self.core.max_model_calls-self.core.model_calls,
+                                'remaining_seconds':max(0,self.core.deadline-time.monotonic())})
+                            self.core.log('Autonom: ungültige Planung an lokales Ersatzmodell '+replacement+' übergeben')
+                            invalid_plans=0
+                            self.save()
                     feedback = '\nPREVIOUS INVALID PLAN:\n'+truncate(json.dumps(value),16000)+'\nVALIDATION ERROR: '+redact(str(exc))+'\nCorrect this error without changing the original task.'
                     continue
                 if value['questions']: raise RunStopped('blocked', 'Rückfrage: '+'; '.join(value['questions']))

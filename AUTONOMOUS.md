@@ -194,6 +194,14 @@ nicht aus. Diese Strukturprüfung beweist noch keine inhaltliche Richtigkeit;
 ausführbare Tests und die abschließende Abnahme bleiben erforderlich. Explizite
 Caller-/Host-Workflows behalten ihr bisheriges Vertragsformat.
 
+Ungültige automatische Beschreibungen erhalten einen genauen Feldpfad in der
+Rückmeldung, etwa `modules[1].outcomes[0]`. Jeder zurückgewiesene Plan wird mit
+Modell, Versuch, Antwort-Hash und begrenztem redigiertem Ausschnitt protokolliert,
+auch beim letzten Versuch. Nach zwei ungültigen Plänen kann ein konfiguriertes
+lokales Ersatzmodell die verbleibenden Planungsversuche übernehmen. Dabei bleiben
+Aufruf-, Zeit- und Reparaturbudgets unverändert; Transportfehler, Abbruch und
+Konflikte zählen nicht als ungültige Pläne.
+
 VS Code: „Modul-Workflow laden“ liest eine JSON-Datei mit task, workflow und test_profiles. Der geöffnete Vertrag samt Programmen wird vor Start geprüft und freigegeben. Programme bleiben vom Auftraggeber definiert; das Modell kann keine Shell-Befehle auswählen. Ein Workflow beweist nur seine deklarierten Kriterien, nicht die Vollständigkeit jeder unklar formulierten Produktidee.
 
 „Grafik lokal mit ComfyUI erzeugen“ verwendet einen bereits laufenden lokalen ComfyUI-Dienst (Standard 127.0.0.1:8189), vorhandenen Checkpoint und ausschließlich Standardknoten. Es lädt keine Modelle oder Erweiterungen herunter. Der Auftrag wird mit Prompt-ID protokolliert. Erst fertige History, PNG-Prüfsummen, passende Abmessungen und zurückgelesener Datei-Hash ergeben succeeded. Nur neue PNG-Pfade im Projekt werden importiert. Bei unklarer Übermittlung wird nicht automatisch neu eingereiht. Grafiken sind getrennte Aufträge und werden bei einem späteren Code-Fehlschlag nicht entfernt. Hostgebundene Grafikerzeugung benötigt noch einen eigenen Hostvertrag.

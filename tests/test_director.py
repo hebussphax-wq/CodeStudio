@@ -140,10 +140,46 @@ class DirectorTests(unittest.TestCase):
     def test_repeated_placeholder_plans_stop_without_project_writes(self):
         bad=workflow()
         for m in bad['modules']:m['contract']='read-only'
+        run=self.make_run(limits={'repairs':1})
         with patch.object(CodeStudioCore,'chat',return_value=bad) as chat:
-            r=self.make_run(limits={'repairs':1}).execute()['receipt']
+            r=run.execute()['receipt']
         self.assertNotEqual(r['status'],'succeeded');self.assertEqual(chat.call_count,2)
         self.assertFalse((self.project/'values.py').exists())
+        failure=r['planning_failures'][-1]
+        self.assertEqual(failure['path'],'modules[0].contract')
+        self.assertEqual(failure['attempt'],2)
+        self.assertIn('read-only',failure['response_preview'])
+        self.assertEqual(len(failure['response_sha256']),64)
+        self.assertEqual(json.loads(run.path.read_text(encoding='utf8'))['planning_failures'][-1],failure)
+    def test_invalid_director_fallback_keeps_original_attempt_and_call_budgets(self):
+        self.config.update(ollama_url='http://127.0.0.1:11439',autonomous_fallback_models=['backup'])
+        bad=workflow();bad['modules'][1]['outcomes']=['app']
+        seen=[]
+        replies=iter([bad,bad,workflow(),create('values.py','def double(n): return n*2\n'),OK,
+                     create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        def chat(role,prompt,model):
+            seen.append((role,model,prompt))
+            if role=='planner':self.assertFalse((self.project/'values.py').exists())
+            return next(replies)
+        run=self.make_run(limits={'repairs':2,'model_calls':8})
+        with patch.object(CodeStudioCore,'installed_models',return_value=['local','backup']),patch.object(CodeStudioCore,'chat',side_effect=chat):
+            r=run.execute()['receipt']
+        self.assertEqual(r['status'],'succeeded')
+        self.assertEqual([m for role,m,prompt in seen[:3]],['local','local','backup'])
+        self.assertIn('modules[1].outcomes[0]',seen[1][2])
+        self.assertEqual(r['model_calls'],8)
+        self.assertEqual(r['model_switches'][0]['phase'],'planning')
+        self.assertEqual(run.fallback_index,1)
+    def test_invalid_director_never_adds_attempts_or_masks_transport_cancellation(self):
+        self.config.update(ollama_url='http://127.0.0.1:11439',autonomous_fallback_models=['backup'])
+        bad=workflow();bad['acceptance']=['app']
+        with patch.object(CodeStudioCore,'installed_models',return_value=['backup']),patch.object(CodeStudioCore,'chat',return_value=bad) as chat:
+            r=self.make_run(limits={'repairs':1}).execute()['receipt']
+        self.assertEqual(chat.call_count,2);self.assertNotIn('model_switches',r)
+        from autonomy import RunStopped
+        with patch.object(CodeStudioCore,'installed_models',return_value=['backup']),patch.object(CodeStudioCore,'chat',side_effect=RunStopped('cancelled','stop')):
+            r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'cancelled');self.assertNotIn('planning_failures',r)
     def test_diagnosis_cannot_target_tests_and_is_never_promoted_to_fact(self):
         self.config['repair_diagnosis']=True
         for affected in (['test_app.py'],['app.py']):
