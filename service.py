@@ -9,7 +9,7 @@ import sys
 import threading
 from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
-from autonomy import AutonomousRun
+from autonomy import AutonomousRun, fallback_models
 from core import CodeStudioCore
 from safety import canonical, redact, safe_path
 
@@ -101,6 +101,9 @@ class StudioService:
             context = request.get('context_tokens',16384)
             tests = request.get('test_argv',[])
             endpoint = None
+            fallbacks = fallback_models(request.get('fallback_models',[]))
+            if self.transport and fallbacks:
+                raise ValueError('Hostgebundene Modelle werden nicht durch lokale Ersatzmodelle umgangen.')
             if 'ollama_url' in request:
                 if self.transport:
                     raise ValueError('Modelladresse wird durch die Hostbindung bestimmt.')
@@ -115,11 +118,13 @@ class StudioService:
                 context=bound['options']['num_ctx']
             self.core.config.setdefault('options',{})['num_ctx'] = context
             self.core.config['tests'] = profiles
+            self.core.config['autonomous_fallback_models'] = fallbacks
             if endpoint is not None:
                 self.core.config['ollama_url'] = endpoint
             self.proposals.clear(); self.core.pending.clear()
             return {'context_tokens':context,'tests_configured':bool(profiles),
-                    'ollama_url':None if self.transport else self.core.config.get('ollama_url')}
+                    'ollama_url':None if self.transport else self.core.config.get('ollama_url'),
+                    'fallback_models':fallbacks}
         if command == 'analyze':
             task, model = request.get('task'), request.get('model')
             if not isinstance(task,str) or not task.strip() or len(task)>24000:

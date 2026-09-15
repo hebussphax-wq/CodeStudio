@@ -6,5 +6,5 @@ test('real Run Tests handler configures and executes engine without options argu
  const box={module:{exports:{}},require:n=>n==='vscode'?vscode:n==='child_process'?{spawn}:n==='fs'?{existsSync:()=>true}:n==='./editor_context'?{}:require(n),Buffer,process,setInterval,clearInterval,setTimeout,queueMicrotask};
  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../vscode/extension.js'),'utf8'),box);
  box.module.exports.activate({subscriptions:[],extensionPath:'C:/extension',globalStorageUri:{fsPath:'C:/state'},globalState:{get:()=>true}});
- const result=await handlers['codestudio.runTests']();assert.equal(result.returncode,0);assert.deepEqual(requests.map(x=>x.command),['configure','test']);assert.deepEqual(errors,[]);
+ const result=await handlers['codestudio.runTests']();assert.equal(result.returncode,0);assert.deepEqual(requests.map(x=>x.command),['configure','test']);assert.deepEqual(requests[0].fallback_models,[]);assert.equal(typeof handlers['codestudio.fallbackModels'],'function');assert.deepEqual(errors,[]);
 });

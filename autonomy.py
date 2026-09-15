@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 from core import CodeStudioCore, truncate, SCHEMA
 from workflow import normalize_job, job_result
 from moduleflow import normalize_workflow
@@ -22,6 +23,13 @@ class RunStopped(RuntimeError):
 class ProposalRejected(RuntimeError):
     pass
 
+def fallback_models(value):
+    if (not isinstance(value,list) or len(value)>3 or
+        any(not isinstance(m,str) or not re.fullmatch(r'[^\s\x00-\x1f]{1,200}',m) for m in value) or
+        len(set(value))!=len(value)):
+        raise ValueError('Höchstens drei unterschiedliche lokale Ersatzmodelle angeben.')
+    return value[:]
+
 class AutonomousCore(CodeStudioCore):
     def checkpoint(self):
         if self.cancel_event.is_set():
@@ -31,10 +39,13 @@ class AutonomousCore(CodeStudioCore):
 
     def chat(self, role, user, model):
         self.checkpoint()
-        model = getattr(self, 'role_models', {}).get(role, model)
+        model = getattr(self, 'role_models', {}).get(role, getattr(self,'fallback_model',None) or model)
+        self.active_role = role
         if self.model_calls >= self.max_model_calls:
             raise RunStopped('budget_exhausted', 'Modellaufruf-Budget erreicht.')
         self.model_calls += 1
+        if self.transport is not None:
+            self.model_history.append({'call':self.model_calls,'role':role,'model':model,'provider':'host'})
         remaining = max(1, self.deadline-time.monotonic())
         self.config['timeout_sec'] = min(self.config.get('timeout_sec', 900), remaining)
         if self.transport is not None and hasattr(self.transport, 'request_timeout'):
@@ -67,6 +78,8 @@ class AutonomousCore(CodeStudioCore):
                 if self.model_calls >= self.max_model_calls:
                     raise RunStopped('budget_exhausted','Modellaufruf-Budget erreicht.')
                 self.model_calls += 1
+            self.model_history.append({'call':self.model_calls,'role':getattr(self,'active_role',None),
+                                       'model':body.get('model'),'provider':self.config.get('ollama_url')})
         return super().ollama_request(path,body,timeout=min(timeout or self.config.get('timeout_sec',900),max(.1,self.deadline-time.monotonic())))
 
     def run_tests(self):
@@ -141,6 +154,14 @@ class AutonomousRun:
         self.core.deadline = time.monotonic()+self.limits['seconds']
         self.core.model_calls = 0
         self.core.max_model_calls = self.limits['model_calls']
+        self.core.model_history = []
+        self.fallbacks = fallback_models(config.get('autonomous_fallback_models',[]))
+        if self.fallbacks:
+            endpoint=urlsplit(config.get('ollama_url',''))
+            if (transport is not None or endpoint.scheme!='http' or endpoint.hostname not in ('localhost','127.0.0.1','::1')
+                or endpoint.username or endpoint.password or endpoint.path not in ('','/') or endpoint.query or endpoint.fragment):
+                raise ValueError('Ersatzmodelle gelten nur für denselben lokalen Standalone-Dienst.')
+        self.fallback_index = 0
         self.path = self.core.runs/('autonomous-'+self.id+'.json')
         self.lock = self.core.workspace/'.codestudio-apply.lock'
         self.tx = WorkspaceTransaction(self.core.workspace,self.core.backups,'autonomous-'+self.id)
@@ -156,6 +177,7 @@ class AutonomousRun:
 
     def save(self):
         self.receipt['model_calls'] = self.core.model_calls
+        self.receipt['model_history'] = list(self.core.model_history)
         self.receipt['updated_at'] = time.time()
         atomic_bytes(self.path,canonical(self.receipt))
         self.emit({'event':'autonomous','run_id':self.id,'status':self.receipt['status'],
@@ -199,7 +221,9 @@ class AutonomousRun:
             else: self.tx.write(rel,new)
             self.expected[rel] = identity(self.core.workspace,rel)
         attempt = {'proposal_id':result.receipt['tag'],'diff':result.diff,
-                   'files':list(result.final_state),'after':{p:self.expected[p] for p in result.final_state}}
+                   'files':list(result.final_state),'after':{p:self.expected[p] for p in result.final_state},
+                   'models':{role:getattr(self.core,'role_models',{}).get(role,getattr(self.core,'fallback_model',None) or self.model)
+                             for role in ('planner','coder','reviewer')}}
         if self.module: attempt['module_id'] = self.module['id']
         self.receipt['attempts'].append(attempt)
         self.save()  # Durable before any test program starts.
@@ -232,6 +256,16 @@ class AutonomousRun:
             self.expected = dict(self.protected)
             self.receipt['protected_tests'] = self.protected
             self.save()
+            if self.fallbacks:
+                installed=set(self.core.installed_models())
+                if any(m not in installed for m in self.fallbacks):
+                    raise RunStopped('blocked','Konfigurierte Ersatzmodelle sind am lokalen Dienst nicht installiert.')
+                # Non-thinking candidates must never inherit an incompatible thinking request.
+                if self.core.config.get('think') not in (None,False):
+                    for model in self.fallbacks:
+                        info=self.core.ollama_request('/api/show',{'model':model})
+                        if 'thinking' not in info.get('capabilities',[]):
+                            raise RunStopped('blocked','Denkmodus ist mit Ersatzmodell nicht kompatibel: '+model)
             if not self.workflow and self.planning == 'modules':
                 self.plan_modules(tree)
             if self.workflow:
@@ -324,6 +358,7 @@ class AutonomousRun:
             self.core.pending.clear()
             # Cancellation/failure may occur between progress saves.
             self.receipt['model_calls'] = self.core.model_calls
+            self.receipt['model_history'] = list(self.core.model_history)
             self.receipt['finished_at']=time.time()
             self.receipt['updated_at']=self.receipt['finished_at']
             errors=[]
@@ -437,13 +472,16 @@ class AutonomousRun:
             self.save()
             feedback=''
             review_failure=''
+            failed_tests=0
             for attempt in range(self.limits['repairs']+1):
+                test=None
                 self.core.log('Modul '+module['id']+' Versuch '+str(attempt+1))
                 task=module['contract']+'\nNur diese Dateien ändern: '+json.dumps(module['files'])
                 if feedback: task+='\nTESTDIAGNOSE (vor nächstem Modul beheben):\n'+feedback
                 try:
                     result,test=self.proposal(task)
                     if test.get('returncode')==0 or (not checked and test.get('status')=='deferred'):
+                        failed_tests=0
                         self.unchanged()
                         context={}; review_bytes=0
                         for p in dict.fromkeys(module['files']+module['references']):
@@ -475,11 +513,31 @@ class AutonomousRun:
                 except ProposalRejected as exc:
                     current_failure=self.latest.get('output','') if self.latest.get('returncode') not in (None,0) else ''
                     feedback=truncate(current_failure or review_failure,9000)+'\nVORSCHLAGFEHLER: '+str(exc)
+                if test is not None and test.get('status')=='failed':
+                    failed_tests+=1
+                if failed_tests>=2 and attempt<self.limits['repairs'] and 'coder' not in module['models']:
+                    previous=getattr(self.core,'fallback_model',None) or self.model
+                    while self.fallback_index<len(self.fallbacks) and self.fallbacks[self.fallback_index]==previous:
+                        self.fallback_index+=1
+                    if self.fallback_index<len(self.fallbacks):
+                        replacement=self.fallbacks[self.fallback_index];self.fallback_index+=1
+                        self.core.checkpoint();self.unchanged()
+                        self.core.fallback_model=replacement
+                        self.receipt.setdefault('model_switches',[]).append({'module':module['id'],
+                            'from':previous,'to':replacement,'reason':'two_executed_module_tests_failed',
+                            'source':{p:self.expected.get(p) for p in module['files']},
+                            'test_sha256':digest(canonical(test)),
+                            'remaining_model_calls':self.core.max_model_calls-self.core.model_calls,
+                            'remaining_seconds':max(0,self.core.deadline-time.monotonic())})
+                        self.core.log('Autonom: lokales Ersatzmodell '+replacement+' innerhalb des bestehenden Budgets')
+                        failed_tests=0
+                        self.save()
                 if attempt < self.limits['repairs'] and self.core.config.get('repair_diagnosis',True) and self.latest.get('returncode') not in (None,0):
                     self.unchanged()
                     current=self.core.read_files(module['files']+module['references'], readonly_assets=True)
                     if self.core.truncated: raise RunStopped('blocked','Reparaturdiagnose benötigt vollständige Moduldateien.')
-                    key=digest(canonical({'module':module['id'],'source':current,'test':self.latest.get('output','')}))
+                    key=digest(canonical({'module':module['id'],'source':current,'test':self.latest.get('output',''),
+                        'model':self.core.role_models.get('planner',getattr(self.core,'fallback_model',None) or self.model)}))
                     reused=key in diagnosis_cache
                     if not reused:
                         try:

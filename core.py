@@ -506,6 +506,8 @@ class CodeStudioCore:
         tag = uuid.uuid4().hex
         ensure_source_text(task)
         receipt = {"schema_version": 2, "tag": tag, "task": task, "workspace": str(self.workspace), "model": model, "rounds": []}
+        receipt['effective_models'] = {role:getattr(self,'role_models',{}).get(role,getattr(self,'fallback_model',None) or model)
+                                       for role in ('planner','coder','reviewer')}
         tree = self.file_tree()
         candidates = self.scout(task, tree)
         self.log("Scout abgeschlossen")

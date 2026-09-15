@@ -11,7 +11,8 @@
   "scout_max_file_bytes": 300000,
   "structured_output": true,
   "keep_alive": "10m",
-  "options": {"temperature": 0.2, "num_ctx": 16384},
+  "think": false,
+  "options": {"num_predict": 4096, "num_ctx": 16384},
   "roles": {
     "planner": {"model": "gpt-oss:20b"},
     "coder": {"model": "gpt-oss:20b"},

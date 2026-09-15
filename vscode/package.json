@@ -113,6 +113,10 @@
       {
         "command": "codestudio.graphics",
         "title": "CodeStudio: Grafik lokal mit ComfyUI erzeugen"
+      },
+      {
+        "command": "codestudio.fallbackModels",
+        "title": "CodeStudio: Lokale Ersatzmodelle wählen"
       }
     ],
     "configuration": {
@@ -181,6 +185,17 @@
           "default": "http://127.0.0.1:11434",
           "scope": "resource",
           "description": "Lokaler Ollama-Dienst für vorhandene Modelle. Hostgebundene Projekte verwenden ihre Hostkonfiguration."
+        },
+        "codestudio.fallbackModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "uniqueItems": true,
+          "default": [],
+          "scope": "resource",
+          "description": "Geordnete vorhandene Ersatzmodelle desselben lokalen Ollama-Dienstes. Nach zwei fehlgeschlagenen Modultests wechseln; ursprüngliche Zeit-, Aufruf- und Reparaturgrenzen bleiben bestehen. Hostmodelle werden nicht umgangen."
         }
       }
     }

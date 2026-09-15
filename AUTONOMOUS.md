@@ -25,6 +25,24 @@ Ein Befund aus der Schlussprüfung erzeugt bei automatisch geplanten Aufträgen
 einen weiteren begrenzten Reparaturplan innerhalb der ursprünglichen Schreibpfade.
 Zeit- und Modellbudget gelten über alle Planungs- und Reparaturrunden hinweg.
 
+Standalone kann in VS Code unter **Ersatzmodelle** bis zu drei vorhandene Modelle
+desselben lokalen Ollama-Dienstes konfigurieren (`codestudio.fallbackModels`).
+Nach zwei ausgeführten, fehlgeschlagenen Modultests wechselt der nächste bereits
+budgetierte Reparaturversuch zum nächsten Kandidaten. Der Wechsel gilt danach
+für nicht ausdrücklich gebundene Rollen, auch in späteren Modulen und im QC.
+Es entstehen keine zusätzlichen Versuche, Modellaufrufe oder Zeitbudgets.
+Explizite Coder-Rollen verhindern einen solchen Wechsel. Hostgebundene Aufträge
+erhalten keinen lokalen Ausweichweg. Fehlende Modelle blockieren vor dem Schreiben;
+es gibt keine Downloads. Ein aktiver Denkmodus muss zu allen Kandidaten passen.
+Dienstkonfiguration: `fallback_models`; interne Konfiguration:
+`autonomous_fallback_models`. Ohne Liste bleibt das gewählte Modell zuständig.
+Wechselgrund, Quell-/Testidentitäten, Restbudget und tatsächliche Modelle stehen
+im Laufbeleg. Das verbessert Ausweichmöglichkeiten, garantiert aber keinen Erfolg.
+Das Standardpaket verwendet direkte Antworten ohne separaten Denkmodus und
+höchstens 4096 Ausgabetokens pro Generierung (Review: 1024). Sampling-Werte wie
+Temperatur kommen aus dem jeweiligen Ollama-Modell; der Kern überschreibt sie
+standardmäßig nicht. Das Kontextfenster bleibt in VS Code einstellbar.
+
 ## Kontext und Lernen aus Fehlschlägen
 
 In VS Code ergänzt die Erweiterung den Auftrag um das gewählte lokale Projekt,
@@ -40,8 +58,12 @@ Das Modell erhält keine beliebige VS-Code-Befehls- oder Terminalausführung.
 Coder und Reviewer erhalten zusätzlich zum Schreibplan einen getrennten
 Lesekontext: README/Anforderungen, vorhandene Tests und Scout-Treffer.
 Standardbudget: insgesamt 16.000 Quellbytes, höchstens 8 Dateien und 8.000 Bytes
-pro Datei. Kürzungen werden markiert. Zugangsdaten, Binärdateien und unzulässige
-Pfade bleiben ausgeschlossen. Referenzen erweitern den Schreibplan nicht.
+pro Datei. Kürzungen werden markiert. Zugangsdaten und unzulässige Pfade bleiben
+ausgeschlossen. In Modulverträgen erscheinen binäre Lesereferenzen ausschließlich
+als Pfad, Größe und SHA-256, auch in Reparaturplanung und Schlussreview.
+Ihre Inhalte werden weder als Quelltext interpretiert noch visuell geprüft.
+Sie bleiben unveränderlich gebunden und erhalten keine Schreibrechte.
+Referenzen erweitern den Schreibplan nicht.
 Ihre Hashes binden den Vorschlag: geänderte Anforderungen machen ihn ungültig.
 
 Abgelehnte Änderungsvorschläge werden als lokale Fehlererfahrungen unter
