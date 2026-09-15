@@ -14,6 +14,7 @@ from workflow import normalize_job, job_result
 from runmemory import save_candidate, load_candidate, candidate_signature, record_success, run_id
 from moduleflow import normalize_workflow, MAX_REFERENCES
 from failureanalysis import analyze_failure, blocker_report
+from plan_gate import acceptance_for_prompt, ensure_checks, lint_plan_acceptance, normalize_acceptance
 from processrunner import run_command, ProcessTreeUncertain
 from safety import WorkspaceTransaction, atomic_bytes, canonical, digest, identity, relative, redact, ensure_source_text, safe_path
 
@@ -154,7 +155,7 @@ class AutonomousRun:
         if request.get('approved') is not True:
             raise ValueError('Autonomen Auftrag für dieses Projekt zuerst starten.')
         self.job = normalize_job(request['job']) if 'job' in request else None
-        self.task = (self.job['task']+'\nAKZEPTANZ:\n'+'\n'.join(self.job['acceptance'])) if self.job else request.get('task')
+        self.task = (self.job['task']+'\nAKZEPTANZ:\n'+acceptance_for_prompt(self.job.get('acceptance'))) if self.job else request.get('task')
         self.model = request.get('model')
         if not isinstance(self.task,str) or not self.task.strip() or len(self.task)>24000:
             raise ValueError('Aufgabe mit Akzeptanzkriterien erforderlich.')
@@ -168,8 +169,10 @@ class AutonomousRun:
             n = limits.get(key,default)
             if type(n) is not int or not low<=n<=high: raise ValueError('Ungültiges Budget: '+key)
             self.limits[key] = n
-        tests = config.get('tests',[])
-        if not tests: raise ValueError('Autonomes Entwickeln benötigt konfigurierte Projekttests.')
+        tests = list(config.get('tests',[]) or [])
+        # SoftKI: leere config.tests erlaubt; ensure_checks bindet Plan-Checks vor dem Coder.
+        if 'workflow' in request and not tests:
+            raise ValueError('Expliziter Workflow benötigt konfigurierte Projekttests.')
         for t in tests:
             if not isinstance(t,dict) or not isinstance(t.get('argv'),list) or not t['argv'] or not all(isinstance(a,str) and a for a in t['argv']):
                 raise ValueError('Testprofil benötigt Programm und Argumente.')
@@ -250,6 +253,41 @@ class AutonomousRun:
             if profile and profile in passed:
                 self.problem_counts.pop(key,None);self.problem_profiles.pop(key,None)
 
+    def bind_plan_checks(self, plan):
+        """Lint acceptance and bind executable checks before any coder write."""
+        if not isinstance(plan, dict):
+            raise ValueError('Plan für SoftKI-Checks erforderlich.')
+        lint_plan_acceptance(plan)
+        profiles = ensure_checks(self.core.workspace, plan, existing_tests=self.all_tests)
+        if not profiles:
+            raise ValueError('SoftKI: Ausführbare acceptance.checks oder config.tests vor dem Coder erforderlich.')
+        self.all_tests = copy.deepcopy(profiles)
+        self.core.config['tests'] = copy.deepcopy(profiles)
+        self.receipt['tests_sha256'] = digest(canonical(profiles))
+        self.receipt['plan_acceptance'] = normalize_acceptance(plan.get('acceptance'))
+        self.save()
+        return profiles
+
+    def numeric_failure_feedback(self, analysis=None):
+        """Repair hint from programmatic analyze_failure — keep numeric evidence."""
+        a = analysis or getattr(self, 'last_failure_analysis', None)
+        if not a:
+            return ''
+        parts = []
+        comp = a.get('comparison') or {}
+        if comp:
+            parts.append('NUMERISCH: ' + json.dumps(comp, ensure_ascii=False))
+        locs = a.get('locations') or []
+        if locs:
+            parts.append('STELLEN: ' + json.dumps(locs, ensure_ascii=False))
+        known = a.get('known') or ''
+        if known:
+            parts.append('BELEG: ' + known[:800])
+        excerpts = a.get('source_excerpts') or []
+        if excerpts:
+            parts.append('QUELLTEXT: ' + json.dumps(excerpts[:2], ensure_ascii=False)[:1200])
+        return '\n'.join(parts)
+
     def save(self):
         self.receipt['model_calls'] = self.core.model_calls
         self.receipt['model_history'] = list(self.core.model_history)
@@ -298,8 +336,17 @@ class AutonomousRun:
             if new is None: self.tx.delete(rel)
             else: self.tx.write(rel,new)
             self.expected[rel] = identity(self.core.workspace,rel)
-        attempt = {'proposal_id':result.receipt['tag'],'diff':result.diff,'candidate_signature':signature,
+        attempt = {'proposal_id':result.receipt['tag'],'diff':result.diff,
+                   'diff_sha256':digest(result.diff.encode('utf-8')),
+                   'candidate_signature':signature,
                    'files':list(result.final_state),'after':{p:self.expected[p] for p in result.final_state},
+                   'analyze_receipt':{'tag':result.receipt.get('tag'),'status':result.receipt.get('status'),
+                                      'plan':result.receipt.get('plan'),'diff_sha256':digest(result.diff.encode('utf-8'))},
+                   'apply_receipt':{'schema':'codestudio.apply.v1','proposal_id':result.receipt['tag'],
+                                    'files':list(result.final_state),
+                                    'after':{p:self.expected[p] for p in result.final_state},
+                                    'applied_at':time.time(),
+                                    'diff_sha256':digest(result.diff.encode('utf-8'))},
                    'models':{role:getattr(self.core,'role_models',{}).get(role,getattr(self.core,'fallback_model',None) or self.model)
                              for role in ('planner','coder','reviewer')}}
         if self.module: attempt['module_id'] = self.module['id']
@@ -357,7 +404,17 @@ class AutonomousRun:
                 tree=self.core.file_tree()
             if not self.workflow and self.planning == 'modules':
                 self.plan_modules(tree)
+                if isinstance(self.receipt.get('plan'), dict):
+                    acc = normalize_acceptance(self.receipt['plan'].get('acceptance'))
+                    if acc.get('checks') or not self.all_tests:
+                        self.bind_plan_checks(self.receipt['plan'])
             if self.workflow:
+                if not self.all_tests:
+                    seed = self.receipt.get('plan') or {'acceptance': (self.job or {}).get('acceptance')}
+                    if seed:
+                        self.bind_plan_checks(seed if isinstance(seed, dict) else {'acceptance': seed})
+                    if not self.all_tests:
+                        raise ValueError('SoftKI: Keine ausführbaren Checks vor Modul-Coder.')
                 continuations=[]
                 start_index=0
                 for final_attempt in range(self.limits['repairs']+1):
@@ -404,10 +461,12 @@ class AutonomousRun:
                 steps = plan.get('plan')
                 if not isinstance(steps,list) or not steps or len(steps)>self.limits['steps'] or not all(isinstance(s,str) and s.strip() for s in steps):
                     raise ValueError('Plan muss nichtleere Schritte innerhalb des Budgets enthalten.')
-                if not isinstance(plan.get('acceptance'),list) or not plan['acceptance']:
+                if plan.get('acceptance') in (None, [], {}):
                     raise ValueError('Plan benötigt überprüfbare Akzeptanzkriterien.')
+                normalize_acceptance(plan.get('acceptance'))  # shape check
                 self.receipt['plan'] = plan
                 self.save()
+                self.bind_plan_checks(plan)  # SoftKI: ensure_checks vor Coder
                 feedback = ''
                 for number, step in enumerate(steps,1):
                     self.core.log('Autonom: Schritt '+str(number)+'/'+str(len(steps))+': '+step)
@@ -430,7 +489,7 @@ class AutonomousRun:
                     if self.latest.get('returncode') == 0:
                         context = self.core.read_files(list(self.tx.files))
                         review = self.core.chat('reviewer','Gesamtergebnis gegen Originalauftrag prüfen. Verbleibende Fehler/Vollständigkeitslücken benennen.\nAUFTRAG:\n'+self.task+
-                            '\nAKZEPTANZ:\n'+json.dumps(plan['acceptance'],ensure_ascii=False)+
+                            '\nAKZEPTANZ:\n'+acceptance_for_prompt(plan.get('acceptance'))+
                             '\nAKTUELLE DATEIEN:\n'+json.dumps(context,ensure_ascii=False)+
                             '\nTESTERGEBNIS:\n'+self.latest['output'],self.model)
                         self.receipt['final_review'] = review
@@ -442,7 +501,7 @@ class AutonomousRun:
                         feedback = redact(json.dumps(review,ensure_ascii=False))
                         self.record_failure({'output':json.dumps(review.get('issues',[])), 'status':'failed'},phase='final_review')
                     else:
-                        feedback = 'Projekttest fehlgeschlagen. Aktuell fehlerhafter Code ist noch im Workspace. Repariere ihn, vorhandene Tests nicht ändern.\n'+self.latest.get('output','')
+                        num=self.numeric_failure_feedback(); feedback = 'Projekttest fehlgeschlagen. Aktuell fehlerhafter Code ist noch im Workspace. Repariere ihn, vorhandene Tests nicht ändern.\n'+self.latest.get('output','')+('\n'+num if num else '')
                     if repair == self.limits['repairs']:
                         raise RunStopped('budget_exhausted','Reparaturbudget erreicht; Ziel noch nicht verifiziert.')
                     self.core.log('Autonom: Reparatur '+str(repair+1)+'/'+str(self.limits['repairs']))
@@ -616,6 +675,10 @@ class AutonomousRun:
                   json.dumps([{'index':i, **p} for i,p in enumerate(self.all_tests)], ensure_ascii=False)+
                   '\nFILE TREE:\n'+'\n'.join(tree)+'\nOMITTED FROM PLANNING CONTEXT (still protected; reference relevant files in module references):\n'+json.dumps(omitted)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
                   '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
+        if not self.all_tests:
+            prompt += ('\nSOFTKI: No prefilled config.tests. Return acceptance as object with checks '
+                       '(each check: name + argv string list OR path to an existing test file) and prose. '
+                       'Quantified prose without checks is rejected. Module test indices refer to those checks once bound.')
         prompt+='\nEXPLICIT FILE-CONTRACT OUTPUTS (every absent file needs a producing module):\n'+json.dumps(required_files)
         if self.request.get('resume_from') and not repair_feedback:
             prompt+='\nRESTORED CANDIDATE FILES (include every file in a module; unchanged files may be revalidated without edits):\n'+json.dumps(sorted(self.tx.files))
@@ -647,6 +710,11 @@ class AutonomousRun:
                     else:
                         value = self.core.chat('planner', prompt+feedback, self.model)
                     self.unchanged()
+                    if isinstance(value, dict) and (value.get('acceptance') is not None or not self.all_tests):
+                        # SoftKI: bind executable checks before director validation uses indices.
+                        if value.get('acceptance') is not None or value.get('checks') is not None:
+                            seed = value if 'acceptance' in value else {'acceptance': {'checks': value.get('checks', []), 'prose': value.get('prose', [])}}
+                            self.bind_plan_checks(seed)
                     workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree,
                                                  final_tests=not interim_repair, required_files=() if repair_feedback else required_files,
                                                  retained_files=self.tx.files if self.request.get('resume_from') and not repair_feedback else ())
@@ -896,7 +964,7 @@ class AutonomousRun:
         self.record_test_progress(self.latest)
         if self.latest.get('returncode')!=0:
             self.record_failure(self.latest,phase='final_testing')
-            self.final_feedback = 'Final tests failed:\n'+self.latest.get('output','')
+            num=self.numeric_failure_feedback(); self.final_feedback = 'Final tests failed:\n'+self.latest.get('output','')+('\n'+num if num else '')
             raise RunStopped('failed','Gesamtprüfung fehlgeschlagen; kein Abschluss.')
         paths=list(dict.fromkeys(list(self.tx.files)+sorted(getattr(self,'review_paths',set()))+[p for m in self.workflow['modules'] for p in m['files']+m['references']]))
         if len(paths)>int(self.core.config.get('context_max_files',40)):
