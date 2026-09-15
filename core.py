@@ -15,6 +15,7 @@ import urllib.request
 import uuid
 import copy
 from processrunner import run_command, ProcessTreeUncertain
+from plan_gate import acceptance_for_prompt
 from safety import (safe_path, WorkspaceTransaction, identity, digest, canonical,
                     read_text, ensure_source_text, atomic_bytes, relative, redact)
 from dataclasses import dataclass, field
@@ -578,7 +579,7 @@ class CodeStudioCore:
         max_rounds = 0 if getattr(self, 'single_attempt', False) else int(self.config.get("max_review_rounds", 2))
         for rnd in range(1, max_rounds + 2):
             self.log(f"Coder Runde {rnd} …")
-            prompt = f"AUFGABE:\n{task}\n\nPLAN:\n{json.dumps(plan.get('plan', []), ensure_ascii=False)}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nDATEIEN:\n{json.dumps(ctx, ensure_ascii=False)}"
+            prompt = f"AUFGABE:\n{task}\n\nPLAN:\n{json.dumps(plan.get('plan', []), ensure_ascii=False)}\n\nAKZEPTANZ:\n{acceptance_for_prompt(plan.get('acceptance'))}\n\nDATEIEN:\n{json.dumps(ctx, ensure_ascii=False)}"
             if contract:
                 # One task, readable source, explicit immutable references. Avoid
                 # burying repair diagnostics in three duplicated contracts and escaped JSON.

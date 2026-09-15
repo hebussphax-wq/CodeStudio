@@ -1,0 +1,4 @@
+# SoftKI Kern write probe
+connector=user-Github
+account=hebussphax-wq
+probe=ok

@@ -18,6 +18,10 @@ Ein abschließendes Modellreview (QC) prüft die ursprünglichen Akzeptanzkriter
 Nur erfolgreiche Projekttests und ein positives Schlussreview ergeben
 succeeded. Das ist ein Entwicklungsergebnis, keine Host-/Owner-Abnahme.
 
+### SoftKI Plan-Gate
+
+Plan-Akzeptanz hat die Form `acceptance.checks` (ausführbare Profile mit `argv` oder `path`) plus `acceptance.prose`. Ein deterministischer Lint ohne Modell weist Quantoren in der Prosa zurück, wenn keine Checks vorliegen. `ensure_checks` bindet diese Checks vor dem Coder an die Laufzeit. Leere `config.tests` sind erlaubt, sobald der Plan ausführbare Checks liefert; ein expliziter Caller-Workflow braucht weiterhin vorkonfigurierte Profile. Reparaturen erhalten die numerischen Felder aus `analyze_failure` (Soll/Ist, Stellen). Analyze→Diff und Apply stehen als Receipts im Laufbeleg. SoftKI-Ready bleibt ein belegtes E2E in der Installation (Analyze→Diff und Live bis Apply), nicht allein die Unit-Suite.
+
 Die Laufzeit steuert Reihenfolge, Abhängigkeiten, Schreibrechte, Tests, Zeit- und
 Aufrufbudgets durch Programmcode. Modelle planen und implementieren innerhalb
 dieses Ablaufs; sie können seine Grenzen nicht ändern.
@@ -125,7 +129,7 @@ nicht bestehen. Bei Fehlschlag, Budgetende oder Abbruch werden die eigenen
 Änderungen zurückgerollt. Fremde Änderungen bleiben erhalten und erzeugen
 gegebenenfalls einen Wiederherstellungskonflikt. Vorhandene Tests und das
 eingestellte Testprogramm dürfen vom Modell nicht abgeschwächt werden.
-Neue Testdateien dürfen entstehen. Ein fehlendes Testprogramm blockiert den Start.
+Neue Testdateien dürfen entstehen. Ohne vorkonfigurierte Tests muss der Plan ausführbare `acceptance.checks` liefern, sonst blockiert SoftKI vor dem Coder.
 Testprogramme laufen mit den Rechten des Benutzers; dies ist keine Sandbox.
 
 **Autonomen Auftrag stoppen** unterbricht den Ablauf. Laufende Tests werden
@@ -152,7 +156,7 @@ job:
 - product: codestudio | tobyki | halomonsterai | bizdrive
 - project_id, task_id, workflow_id, employee_id: gebundene Kennungen
 - task: konkrete Entwicklungsaufgabe
-- acceptance: nichtleere Liste überprüfbarer Kriterien
+- acceptance: Liste oder Objekt `{checks, prose}` mit überprüfbaren Kriterien
 - execution_authorized: true nach produktgebundener Host-Prüfung
 
 status liefert aktiven Auftrag und Fortschritt; cancel mit run_id stoppt genau
@@ -273,7 +277,7 @@ cause. The coder must check it against source and unchanged test requirements.
 
 The final module review includes unchanged declared module files and read-only dependencies, not only files written in the current run. Its complete file identities are recorded; count, per-file and total context limits fail closed instead of silently dropping dependencies.
 
-### Spätere Dateiab­hängigkeiten
+### Spätere Dateiabhängigkeiten
 
 Bei automatisch geplanten Modulen kann ein Test eine Datei benötigen, die laut
 Plan erst später entsteht. Nur ein konkreter ENOENT/FileNotFoundError für genau
