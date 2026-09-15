@@ -166,6 +166,9 @@ class CodeStudioCore:
         return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
 
     def output_schema(self, role):
+        if role == 'planner' and getattr(self, 'director_mode', False):
+            from director import DIRECTOR_SCHEMA
+            return DIRECTOR_SCHEMA
         if role == 'coder' and getattr(self,'module_mode',False):
             return {'type':'object','properties':{'edits':{'type':'array','minItems':1,'maxItems':4,
                 'items':{'type':'object','properties':{'path':{'type':'string'},'op':{'type':'string','enum':['create','write','delete']},'content':{'type':'string'}},'required':['path','op','content'],'additionalProperties':False}},'notes':{'type':'string','maxLength':300}},'required':['edits','notes'],'additionalProperties':False}
@@ -188,6 +191,9 @@ class CodeStudioCore:
     def chat(self, role: str, user: str, model: str) -> dict:
         effective_system = "Implement ONLY the bounded module contract. Return JSON edits with exactly path, op (create/write/delete), content (complete source). No old_text or new_text, no duplicate code, no shell commands. Keep implementation concise and complete." if role == 'coder' and getattr(self,'module_mode',False) else SYSTEM[role]
         if role == 'planner' and getattr(self,'module_mode',False): effective_system = 'Diagnose the concrete test failure from the source. Return JSON with plan (at most 3 precise repair steps naming the faulty expression), files (affected module files), questions (empty unless essential information is absent), acceptance (test that must pass). Analyze the root cause, do not restate the feature request. Never change tests.'
+        if role == 'planner' and getattr(self, 'director_mode', False):
+            from director import DIRECTOR_SYSTEM
+            effective_system = DIRECTOR_SYSTEM
         if role == 'reviewer' and getattr(self,'module_mode',False): effective_system = "You are a software reviewer. First compute what the source actually does, including functions called by factories. Then compare this behavior with the explicit contract. Return JSON in this order: observations (short factual explanation), defects (only demonstrated contract violations, empty array when none), verdict (ok or reject), summary. A passing test alone does not prove correctness. Never invent a missing value when the code computes it. Approve when the contract is fulfilled. The defects array contains only broken behavior; passing checks belong in observations, never defects."
         if self.transport is not None:
             result = self.transport('chat', {'role': role, 'model': model, 'system': effective_system,

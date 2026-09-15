@@ -71,13 +71,16 @@ class AutonomousCore(CodeStudioCore):
 
     def run_tests(self):
         self.checkpoint()
+        if not self.config['tests']:
+            return {'status':'deferred', 'returncode':None, 'results':[],
+                    'output':'Noch kein unabhängiger Test ausführbar. Modul nur quelltextgeprüft; Gesamttests bleiben verpflichtend.'}
         results = []
         for profile in self.config['tests']:
             self.checkpoint()
             self.log('Autonom: Projekttest '+str(profile.get('name') or profile['argv'][0]))
             timeout = min(profile.get('timeout_sec', 300), max(.1, self.deadline-time.monotonic()))
             outcome = run_command(profile['argv'], self.workspace, timeout, cancel_event=self.cancel_event)
-            if outcome['returncode']==0 and re.search(r'\bRan 0 tests?\b',outcome['output']):
+            if outcome['returncode']==0 and re.search(r'\bRan 0 tests?\b|(?:^|\n)\s*(?:#|ℹ)?\s*tests 0\s*(?:\n|$)',outcome['output']):
                 outcome={**outcome,'returncode':126,'status':'no_tests','output':outcome['output']+'\nKeine Tests ausgeführt; kein autonomer Abschluss.'}
             row = {**outcome, 'name':profile.get('name') or profile['argv'][0],
                    'output':truncate(redact(outcome['output']), 12000)}
@@ -126,6 +129,8 @@ class AutonomousRun:
             if type(t.get('timeout_sec',300)) is not int or not 1<=t.get('timeout_sec',300)<=3600:
                 raise ValueError('Ungültiger Test-Timeout.')
         self.workflow = normalize_workflow(request['workflow'], len(tests), self.limits['steps']) if 'workflow' in request else None
+        self.planning = request.get('planning', 'modules')
+        if self.planning not in ('modules', 'steps'): raise ValueError('Unbekannter Planungsmodus.')
         self.all_tests = copy.deepcopy(tests)
         self.module = None
         self.emit = emit
@@ -227,8 +232,22 @@ class AutonomousRun:
             self.expected = dict(self.protected)
             self.receipt['protected_tests'] = self.protected
             self.save()
+            if not self.workflow and self.planning == 'modules':
+                self.plan_modules(tree)
             if self.workflow:
-                self.execute_modules()
+                for final_attempt in range(self.limits['repairs']+1):
+                    self.final_feedback = None
+                    try:
+                        self.execute_modules()
+                        break
+                    except RunStopped:
+                        if not self.final_feedback or self.request.get('workflow') or final_attempt == self.limits['repairs']:
+                            raise
+                        self.receipt.setdefault('integration_repairs', []).append({
+                            'attempt':final_attempt+1, 'feedback':self.final_feedback,
+                            'previous_workflow_sha256':digest(canonical(self.workflow))})
+                        self.core.log('Autonom: Gesamtbefund in begrenzte Reparaturmodule übersetzen')
+                        self.plan_modules(self.core.file_tree(), self.final_feedback)
             else:
                 plan = self.core.chat('planner','AUTONOMER GESAMTAUFTRAG:\n'+self.task+
                     '\nZerlege in maximal '+str(self.limits['steps'])+' zusammenhängende Implementierungsschritte. '
@@ -323,6 +342,87 @@ class AutonomousRun:
         if self.job: result['workflow_result'] = job_result(self.job,self.receipt,str(self.path))
         return result
 
+    def plan_modules(self, tree, repair_feedback=None):
+        """Generate and validate contracts before any model-directed project write."""
+        from director import validate_director
+        self.core.checkpoint(); self.unchanged()
+        preferred = [p for p in tree if pathlib.PurePosixPath(p).name.lower() in
+                     ('readme.md', 'requirements.md', 'spec.md', 'agents.md')]
+        paths = list(dict.fromkeys(list(self.protected) + preferred +
+                     [hit['path'] for hit in self.core.scout(self.task, tree)]))
+        if repair_feedback:
+            paths = list(dict.fromkeys(sorted(self.authorized_files) +
+                         sorted(self.review_paths) + paths))
+        max_files = min(24, int(self.core.config.get('context_max_files', 40)))
+        if len(paths) > max_files: raise RunStopped('blocked', 'Zu viele Verträge für vollständige Planung; Projekt eingrenzen.')
+        context = self.core.read_files(paths)
+        if self.core.truncated or len(context) != len(paths) or sum(len(t.encode('utf8')) for t in context.values()) > 60000:
+            raise RunStopped('blocked', 'Planungskontext unvollständig oder zu groß.')
+        self.unchanged()
+        self.expected.update(self.core.read_identity)
+        self.receipt['planning_context'] = dict(self.core.read_identity)
+        prompt = ('ORIGINAL TASK:\n'+self.task+'\nMAXIMUM MODULES: '+str(self.limits['steps'])+
+                  '\nAVAILABLE TEST PROFILES (indices are the only permitted test selections):\n'+
+                  json.dumps([{'index':i, **p} for i,p in enumerate(self.all_tests)], ensure_ascii=False)+
+                  '\nFILE TREE:\n'+'\n'.join(tree)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
+                  '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
+        if repair_feedback:
+            prompt += ('\nFINAL INTEGRATION DEFECTS:\n'+repair_feedback+
+                       '\nPlan only repairs of these defects in these already authorized files: '+
+                       json.dumps(sorted(self.authorized_files))+'. Preserve working behavior. Do not repeat completed implementation.')
+        feedback = ''
+        self.core.director_mode = True
+        try:
+            for attempt in range(self.limits['repairs']+1):
+                self.unchanged(); self.core.checkpoint()
+                self.core.log('Autonom: Arbeitsplan aus Auftrag und Projektverträgen erstellen')
+                value = self.core.chat('planner', prompt+feedback, self.model)
+                self.unchanged()
+                try:
+                    workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree)
+                    # Requirements and selected executable test contracts must reach the coder
+                    # even when the director forgets to repeat them in its references field.
+                    for m in workflow['modules']:
+                        required = list(preferred)
+                        for i in m['tests']:
+                            for arg in self.all_tests[i]['argv']:
+                                try:
+                                    p = pathlib.Path(arg)
+                                    rel = p.resolve().relative_to(self.core.workspace).as_posix() if p.is_absolute() else relative(arg)
+                                    if rel in self.protected: required.append(rel)
+                                except (ValueError, OSError): pass
+                        refs = list(dict.fromkeys(m['references']+required))
+                        m['references'] = [p for p in refs if p not in m['files']]
+                        if len(m['references']) > 12: raise ValueError('Pflicht-Lesekontext überschreitet zwölf Modulreferenzen.')
+                    writes = {p for m in workflow['modules'] for p in m['files']}
+                    if repair_feedback and not writes.issubset(self.authorized_files):
+                        raise ValueError('Gesamtreparatur darf den ursprünglichen Schreibbereich nicht erweitern.')
+                except ValueError as exc:
+                    self.receipt.setdefault('planning_errors', []).append(redact(str(exc)))
+                    self.save()
+                    if attempt == self.limits['repairs']: raise
+                    feedback = '\nPREVIOUS INVALID PLAN:\n'+truncate(json.dumps(value),16000)+'\nVALIDATION ERROR: '+redact(str(exc))+'\nCorrect this error without changing the original task.'
+                    continue
+                if value['questions']: raise RunStopped('blocked', 'Rückfrage: '+'; '.join(value['questions']))
+                self.workflow = workflow
+                if not repair_feedback: self.authorized_files = writes
+                self.review_paths = getattr(self, 'review_paths', set()) | {
+                    p for m in workflow['modules'] for p in m['files']+m['references']}
+                for m in workflow['modules']:
+                    for p in m['files']+m['references']:
+                        self.expected.setdefault(p, identity(self.core.workspace,p))
+                self.core.module_mode = True
+                self.receipt['plan'] = value
+                self.receipt['workflow'] = workflow
+                self.receipt.setdefault('plan_history', []).append({'plan':value, 'workflow':workflow,
+                    'input_identities':dict(self.core.read_identity), 'repair':bool(repair_feedback)})
+                self.receipt['planning_origin'] = 'model_from_original_task'
+                self.receipt['workflow_sha256'] = digest(canonical(workflow))
+                self.save()
+                return
+        finally:
+            self.core.director_mode = False
+
     def execute_modules(self):
         """No dependent work begins until its module and all earlier gates pass."""
         checked=[]
@@ -343,7 +443,7 @@ class AutonomousRun:
                 if feedback: task+='\nTESTDIAGNOSE (vor nächstem Modul beheben):\n'+feedback
                 try:
                     result,test=self.proposal(task)
-                    if test.get('returncode')==0:
+                    if test.get('returncode')==0 or (not checked and test.get('status')=='deferred'):
                         self.unchanged()
                         context={}; review_bytes=0
                         for p in dict.fromkeys(module['files']+module['references']):
@@ -365,7 +465,7 @@ class AutonomousRun:
                             review_failure=redact(json.dumps(review))
                             raise ProposalRejected(review_failure)
                         self.receipt['steps'].append({'number':number,'id':module['id'],
-                            'status':'verified','proposal_id':result.receipt['tag'],
+                            'status':'verified' if module['tests'] else 'reviewed_pending_tests','proposal_id':result.receipt['tag'],
                             'tests':checked[:], 'after':{p:self.expected[p] for p in module['files'] if p in self.expected}})
                         self.save(); break
                     feedback=test.get('output','Test fehlgeschlagen')
@@ -389,14 +489,18 @@ class AutonomousRun:
                 self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
                 self.save()
                 if attempt==self.limits['repairs']:
+                    if not self.request.get('workflow') and self.latest.get('returncode') not in (None,0):
+                        self.final_feedback = ('Cumulative integration test failed while implementing '+module['id']+
+                            '. The defect may be in an earlier module; inspect the current implementation and repair its actual cause.\n'+feedback)
                     raise RunStopped('budget_exhausted','Modul '+module['id']+' nicht verifiziert; abhängige Schritte nicht gestartet.')
         self.module=None; self.core.role_models={}
         self.core.config['tests']=self.all_tests
         self.latest=self.core.run_tests()
         self.unchanged(); self.core.checkpoint()
         if self.latest.get('returncode')!=0:
+            self.final_feedback = 'Final tests failed:\n'+self.latest.get('output','')
             raise RunStopped('failed','Gesamtprüfung fehlgeschlagen; kein Abschluss.')
-        paths=list(dict.fromkeys(list(self.tx.files)+[p for m in self.workflow['modules'] for p in m['files']+m['references']]))
+        paths=list(dict.fromkeys(list(self.tx.files)+sorted(getattr(self,'review_paths',set()))+[p for m in self.workflow['modules'] for p in m['files']+m['references']]))
         if len(paths)>int(self.core.config.get('context_max_files',40)):
             raise RunStopped('blocked','Zu viele Dateien für vollständiges Schlussreview.')
         context=self.core.read_files(paths)
@@ -408,7 +512,9 @@ class AutonomousRun:
         review=self.core.chat('reviewer','Review the entire result against the ORIGINAL TASK. Read-only references are context, not additional write requirements. Reject demonstrated missing functionality.\n'+self.task+'\nFILES:\n'+source_text+'\nEXECUTED TESTS:\n'+self.latest.get('output',''),self.model)
         self.receipt['final_review']=review
         self.unchanged(); self.core.checkpoint()
-        if review.get('verdict')!='ok': raise RunStopped('failed','Gesamt-QC hat den Originalauftrag nicht bestätigt: '+redact(json.dumps(review)))
+        if review.get('verdict')!='ok':
+            self.final_feedback = 'Final review rejected:\n'+redact(json.dumps(review))
+            raise RunStopped('failed','Gesamt-QC hat den Originalauftrag nicht bestätigt: '+redact(json.dumps(review)))
         self.receipt['active_module']=None
         self.receipt['status']='succeeded'
         self.receipt['completion_basis']='All module contracts reviewed, cumulative gates and complete configured suite passed; external product acceptance remains separate.'

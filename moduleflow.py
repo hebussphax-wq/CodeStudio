@@ -2,7 +2,7 @@
 import copy
 from safety import relative, ensure_source_text
 
-def normalize_workflow(value, test_count, max_steps):
+def normalize_workflow(value, test_count, max_steps, allow_pending_tests=False):
     if not isinstance(value, dict) or value.get('schema') != 'codestudio.modules.v1':
         raise ValueError('Workflow benötigt codestudio.modules.v1.')
     modules=value.get('modules')
@@ -27,7 +27,7 @@ def normalize_workflow(value, test_count, max_steps):
         if not isinstance(dependencies,list) or any(not isinstance(d,str) or d not in seen for d in dependencies):
             raise ValueError('Abhängigkeiten müssen vorherige Module bezeichnen.')
         checks=row.get('tests')
-        if not isinstance(checks,list) or not checks or any(type(i) is not int or not 0<=i<test_count for i in checks):
+        if not isinstance(checks,list) or (not checks and not allow_pending_tests) or any(type(i) is not int or not 0<=i<test_count for i in checks):
             raise ValueError('Modul benötigt freigegebene Testprofil-Indizes.')
         models=row.get('models',{})
         if not isinstance(models,dict) or any(k not in ('planner','coder','reviewer') or not isinstance(v,str) or not v.strip() for k,v in models.items()):

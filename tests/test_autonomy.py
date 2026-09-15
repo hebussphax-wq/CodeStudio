@@ -28,7 +28,7 @@ class AutonomyTests(unittest.TestCase):
         self.config={'workspace':str(self.workspace),'state_dir':str(self.root/'state'),'tests':[{'argv':[sys.executable,'-B','-m','unittest','discover','-v'],'timeout_sec':20}]}
     def tearDown(self):self.temp.cleanup()
     def run_new(self,**kwargs):
-        request={'run_id':uuid.uuid4().hex,'approved':True,'task':'Implement a=2 and b=3','model':'fixture',**kwargs}
+        request={'run_id':uuid.uuid4().hex,'approved':True,'task':'Implement a=2 and b=3','model':'fixture','planning':'steps',**kwargs}
         return AutonomousRun(self.root,self.config,request)
     def test_multistep_real_tests_then_automatic_repair(self):
         run=self.run_new()

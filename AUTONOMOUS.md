@@ -9,6 +9,9 @@ gemeinsamen VS-Code-Studio bearbeitet.
 ## Ablauf
 
 Einmal **Autonom entwickeln** für ein Projekt und eine Aufgabe starten.
+Der Auftrag liest vorhandene Anforderungen und Testverträge und erzeugt daraus
+selbst kleine Modulverträge mit Schnittstellen, Schreibpfaden, Lesereferenzen,
+Abhängigkeiten und passenden Testprofilen. Ein vorbereiteter Workflow ist optional.
 Der Auftrag plant Teilaufgaben, liest Dateien, erzeugt geprüfte Änderungen,
 schreibt sie, führt die eingestellten Tests aus und repariert Fehler automatisch.
 Ein abschließendes Modellreview (QC) prüft die ursprünglichen Akzeptanzkriterien.
@@ -17,8 +20,10 @@ succeeded. Das ist ein Entwicklungsergebnis, keine Host-/Owner-Abnahme.
 
 Standardgrenzen: 6 Schritte, 3 Reparaturen, 30 Minuten, 80 tatsächliche
 Modellanfragen, 32 geänderte Dateien. Grenzen sind keine Leistungsgarantie
-für ein bestimmtes Modell. Gescheiterte Teilschritte werden an die abschließende
-Reparatur übergeben; keine unbegrenzte Wiederholung.
+für ein bestimmtes Modell. Modulfehler werden vor abhängigen Schritten repariert.
+Ein Befund aus der Schlussprüfung erzeugt bei automatisch geplanten Aufträgen
+einen weiteren begrenzten Reparaturplan innerhalb der ursprünglichen Schreibpfade.
+Zeit- und Modellbudget gelten über alle Planungs- und Reparaturrunden hinweg.
 
 ## Kontext und Lernen aus Fehlschlägen
 
@@ -135,7 +140,30 @@ Projekte behalten ihre Hoststeuerung und erlauben hier keine Adressüberschreibu
 
 ## Modulabläufe und lokale Grafiken
 
-Ein expliziter Workflow (schema codestudio.modules.v1) ergänzt den bisherigen freien Plan. Jedes Modul enthält id, contract, files (höchstens vier), references, depends_on, tests (Indizes freigegebener Testprofile) und optional models mit coder/reviewer. Nur diese Dateien sind schreibbar. Ein Modul wird erst nach Review und kumulativen Tests als verified vermerkt. Fehler werden innerhalb des Reparaturbudgets sofort bearbeitet; abhängige Schritte beginnen erst danach. Zum Schluss laufen alle Profile. Bei Fehlschlag wird weiterhin der gesamte Lauf zurückgerollt. Automatische Wiederaufnahme ist noch nicht implementiert.
+Ohne expliziten Workflow erzeugt der Planer standardmäßig selbst einen begrenzten
+Modulablauf. Ein expliziter Workflow (schema codestudio.modules.v1) bleibt für
+vorbereitete oder hostgesteuerte Aufträge verfügbar. Jedes Modul enthält id,
+contract, files (höchstens vier), references, depends_on und tests (Indizes bereits
+freigegebener Testprofile). Explizite Workflows können zusätzlich Rollenmodelle
+festlegen; das automatisch planende Modell darf dies nicht. Nur die festgelegten
+Dateien sind schreibbar. Zum Schluss laufen ausnahmslos alle konfigurierten Profile.
+Bei Fehlschlag wird weiterhin der gesamte Lauf zurückgerollt. Automatische
+Wiederaufnahme nach Prozessabsturz oder Budgetende ist noch nicht implementiert.
+
+Automatisch geplante frühe Module dürfen eine Gesamtprüfung aufschieben, wenn
+deren spätere Abhängigkeiten noch fehlen. Sie erhalten dann ausschließlich
+Quelltextreview und den Status reviewed_pending_tests; ihr Teststatus ist deferred
+mit returncode null. Sie zählen nicht als erfolgreich getestet. Bereits begonnene
+Testprofile laufen kumulativ weiter. Der letzte Schritt und die Schlussprüfung
+müssen alle Profile bestehen. Leere Python-/Node-Testsuiten werden abgewiesen.
+Für explizite Workflows bleibt ein Testprofil pro Modul verpflichtend.
+
+Planung liest höchstens 24 vollständige Vertragsdateien mit zusammen 60.000 Bytes;
+unvollständiger Kontext blockiert den Auftrag. Ungültige Pfade, Referenzen und
+Testindizes erzeugen begrenztes Validierungsfeedback an den Planer vor dem ersten
+Schreiben. Plan, Annahmen, Eingangsidentitäten und Workflowhash werden gespeichert.
+Wirklich fehlende Angaben werden als Rückfrage ausgegeben. Das alte Schrittprotokoll
+ist nur noch über planning=steps ausdrücklich auswählbar.
 
 VS Code: „Modul-Workflow laden“ liest eine JSON-Datei mit task, workflow und test_profiles. Der geöffnete Vertrag samt Programmen wird vor Start geprüft und freigegeben. Programme bleiben vom Auftraggeber definiert; das Modell kann keine Shell-Befehle auswählen. Ein Workflow beweist nur seine deklarierten Kriterien, nicht die Vollständigkeit jeder unklar formulierten Produktidee.
 
@@ -143,7 +171,10 @@ VS Code: „Modul-Workflow laden“ liest eine JSON-Datei mit task, workflow und
 
 Lokale Coder und ComfyUI teilen Grafikspeicher: schwere Generierungen nacheinander ausführen. Das Vorhandensein eines Modells/Studios beweist weder Anbindung noch erfolgreiche Entwicklung.
 
-Im Modulmodus erfolgt zuerst die begrenzte Anwendung innerhalb der Rückrolltransaktion, dann der reale kumulative Test und erst bei bestandenem Test das Modellreview. Dadurch bewertet der Reviewer konkrete Ergebnisse. Kein Modul wird vor beidem als verified markiert. Der freie Diff-/Freigabemodus behält sein Review vor Anwendung.
+Im Modulmodus erfolgt zuerst die begrenzte Anwendung innerhalb der Rückrolltransaktion,
+dann der ausführbare kumulative Test und das Modellreview. Kein Modul wird vor beidem
+als verified markiert. Die oben beschriebenen aufgeschobenen Tests bleiben sichtbar
+offen. Der freie Diff-/Freigabemodus behält sein Review vor Anwendung.
 
 Modul-Coder liefern pro Datei nur path, op und vollständigen content; die separaten old_text/new_text-Felder des freien Patch-Modus entfallen. Bereits installierte lokale Werkzeugprofile können optional unter LOCALAPPDATA/CodeStudio/local-tools.json registriert werden. Der Standalone-Dienst startet ausschließlich passende, aktivierte lokale Profile mit direkten Argumentlisten, prüft ihre API und protokolliert den Prozess. Bei unklarem Start bleibt eine Startsperre erhalten. Keine Modell-Downloads oder globale Dienständerungen.
 
