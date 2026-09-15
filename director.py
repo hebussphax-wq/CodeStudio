@@ -12,7 +12,7 @@ DIRECTOR_SCHEMA = {
     'properties': {
         'acceptance': {'type': 'array', 'items': DESCRIPTION, 'minItems': 1, 'maxItems': 16},
         'assumptions': {**STRINGS, 'maxItems': 8},
-        'questions': {**STRINGS, 'maxItems': 4},
+        'questions': {**STRINGS, 'maxItems': 4, 'description': 'Only indispensable external facts or permissions that prevent safe implementation. Empty for reversible design choices; put those decisions in assumptions.'},
         'modules': {'type': 'array', 'minItems': 1, 'maxItems': 12, 'items': {
             'type': 'object', 'additionalProperties': False,
             'properties': {
@@ -29,7 +29,10 @@ DIRECTOR_SCHEMA = {
 DIRECTOR_SYSTEM = """You lead a local software development team. Turn the original brief and actual
 read-only project contracts into a SMALL dependency-ordered implementation workflow. Return the
 requested JSON only. Make reasonable reversible choices for unspecified details and record assumptions.
-Ask questions only when an essential requirement cannot be inferred. Preserve every explicit user
+Ask questions only when an essential external fact or permission cannot be inferred. You are
+authorized to create the requested software: missing implementation is the work to do, not a reason
+to ask whether it already exists. Choose reversible details (layout, animations, naming, timing,
+internal architecture) yourself within the supplied contracts and record these in assumptions. Preserve every explicit user
 requirement. This is a PLAN, not an implementation: never put source code, function bodies, entire
 arrays or HTML/CSS in contract/outcomes. Use 1–3 concise natural-language sentences per contract.
 Name exported APIs and their behavior; let the coder implement them from the original tests.

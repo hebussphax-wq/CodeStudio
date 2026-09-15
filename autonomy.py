@@ -431,6 +431,7 @@ class AutonomousRun:
                        json.dumps(sorted(self.authorized_files))+'. Preserve working behavior. Do not repeat completed implementation.')
         feedback = ''
         invalid_plans = 0
+        clarification_refined = False
         self.core.director_mode = True
         try:
             for attempt in range(self.limits['repairs']+1):
@@ -492,7 +493,15 @@ class AutonomousRun:
                             self.save()
                     feedback = '\nPREVIOUS INVALID PLAN:\n'+truncate(json.dumps(value),4000)+'\nVALIDATION ERROR: '+redact(str(exc))+'\nCorrect this error without changing the original task. Return a concise plan, no implementation code or full data arrays.'
                     continue
-                if value['questions']: raise RunStopped('blocked', 'Rückfrage: '+'; '.join(value['questions']))
+                if value['questions']:
+                    self.receipt.setdefault('planning_questions', []).append(value['questions'])
+                    self.save()
+                    if not clarification_refined and attempt < self.limits['repairs']:
+                        clarification_refined = True
+                        feedback = ('\nRECONSIDER PROPOSED QUESTIONS:\n'+json.dumps(value['questions'],ensure_ascii=False)+
+                            '\nResolve reversible implementation and design choices yourself using the original task and read-only contracts. Missing code is the task to implement. Record decisions in assumptions. Keep questions only for indispensable external facts or permissions. Return the complete concise workflow.')
+                        continue
+                    raise RunStopped('blocked', 'Rückfrage: '+'; '.join(value['questions']))
                 self.workflow = workflow
                 if not repair_feedback: self.authorized_files = writes
                 self.review_paths = getattr(self, 'review_paths', set()) | {

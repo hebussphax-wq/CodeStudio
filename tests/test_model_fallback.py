@@ -1,7 +1,7 @@
 import json, unittest
 from unittest.mock import patch
-import test_director as director_tests
-from test_director import OK
+from tests import test_director as director_tests
+from tests.test_director import OK
 from core import CodeStudioCore
 from autonomy import fallback_models, RunStopped
 from service import StudioService

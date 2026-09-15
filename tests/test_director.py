@@ -84,6 +84,19 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(r['status'],'succeeded');self.assertTrue(r['planning_context_omitted'])
         self.assertLessEqual(len(r['planning_context']),24)
         self.assertGreater(len(r['protected_tests']),24)
+    def test_reversible_planning_questions_get_one_bounded_refinement(self):
+        first=workflow();first['questions']=['Should I implement the missing formatter?']
+        replies=iter([first,workflow(),create('values.py','def double(n): return n*2\n'),OK,
+            create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        prompts=[]
+        def chat(role,prompt,model):prompts.append(prompt);return next(replies)
+        with patch.object(CodeStudioCore,'chat',side_effect=chat):r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'succeeded');self.assertIn('RECONSIDER PROPOSED QUESTIONS',prompts[1])
+    def test_essential_question_is_not_silently_discarded(self):
+        first=workflow();first['questions']=['Which external interface contract applies?']
+        with patch.object(CodeStudioCore,'chat',return_value=first) as chat:r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'blocked');self.assertEqual(chat.call_count,2)
+        self.assertFalse((self.project/'values.py').exists());self.assertEqual(len(r['planning_questions']),2)
     def test_protected_future_and_invented_profiles_rejected(self):
         for key,value in [('files',['test_app.py']),('references',['app.py']),('tests',[99]),('models',{'coder':'invented'})]:
             plan=workflow();plan['modules'][0][key]=value
