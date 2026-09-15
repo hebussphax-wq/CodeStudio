@@ -37,7 +37,7 @@ class ModelFallbackTests(unittest.TestCase):
         self.assertTrue(all(m=='backup' for role,m in calls if role=='reviewer'))
         self.assertEqual(set(run.tx.files),{'app.py'})
 
-    def test_stale_test_from_rejected_proposal_does_not_trigger_switch(self):
+    def test_invalid_proposal_counts_as_attempt_without_replaying_old_test(self):
         workflow=self.setup_fallback();models=[]
         def chat(role,prompt,model):
             if role!='coder':return OK
@@ -48,7 +48,9 @@ class ModelFallbackTests(unittest.TestCase):
                 'content':f'def show(n): return str(n*{value})\n'}]}
         with patch.object(CodeStudioCore,'installed_models',return_value=['backup']),patch.object(CodeStudioCore,'chat',side_effect=chat):
             r=self.make_run(workflow=workflow,limits={'repairs':3}).execute()['receipt']
-        self.assertEqual(r['status'],'succeeded');self.assertEqual(models,['local','local','local','backup'])
+        self.assertEqual(r['status'],'succeeded');self.assertEqual(models,['local','local','backup','backup'])
+        self.assertEqual(len(r['attempts']),3)
+        self.assertEqual([a['phase'] for a in r['failure_analysis']],['implementation','proposal','implementation'])
 
     def test_switch_does_not_add_attempts_or_reset_call_budget(self):
         for limits in ({'repairs':1},{'repairs':3,'model_calls':4}):

@@ -143,3 +143,52 @@ class ScriptFirstTests(unittest.TestCase):
         proposals=[a for a in r['failure_analysis'] if a['phase']=='proposal']
         self.assertEqual(len(assertions),1);self.assertEqual(assertions[0]['attempts'],1)
         self.assertEqual([a['attempts'] for a in proposals],[1,2,3]);self.assertTrue(r['rollback_verified'])
+
+    def test_invalid_edits_have_one_coder_output_per_visible_attempt(self):
+        (self.project/'app.py').write_text('def show(n): return str(n*3)\n')
+        self.config['max_review_rounds']=2
+        plan=workflow();plan['modules']=plan['modules'][1:];plan['modules'][0]['depends_on']=[]
+        run=self.make_run(workflow={'schema':'codestudio.modules.v1','modules':plan['modules']},limits={'repairs':3})
+        with patch.object(CodeStudioCore,'chat',return_value=create('app.py','def show(n): return str(n*2)\n')) as calls:
+            r=run.execute()['receipt']
+        self.assertEqual(calls.call_count,4)
+        self.assertEqual(r['status'],'stalled');self.assertEqual(r['blocker_report']['attempts'],4)
+        self.assertEqual((self.project/'app.py').read_text(),'def show(n): return str(n*3)\n')
+
+    def test_malformed_json_does_not_hide_an_extra_autonomous_model_call(self):
+        run=self.make_run()
+        with patch.object(CodeStudioCore,'ollama_request',return_value={'message':{'content':'not JSON'}}) as request:
+            with self.assertRaises(RuntimeError):run.core.chat('coder','small task','local')
+        self.assertEqual(request.call_count,1)
+        self.assertEqual(run.core.model_calls,1)
+
+    def test_repeated_invalid_proposals_can_switch_to_configured_model(self):
+        (self.project/'app.py').write_text('def show(n): return str(n*3)\n')
+        self.config['ollama_url']='http://127.0.0.1:11439'
+        self.config['autonomous_fallback_models']=['backup']
+        plan=workflow();plan['modules']=plan['modules'][1:];plan['modules'][0]['depends_on']=[]
+        models=[]
+        def chat(role,prompt,model):
+            if role=='reviewer':return OK
+            models.append(model)
+            return {'edits':[{'path':'app.py','op':'write' if model=='backup' else 'create',
+                              'content':'def show(n): return str(n*2)\n'}]}
+        with patch.object(CodeStudioCore,'installed_models',return_value=['local','backup']), patch.object(CodeStudioCore,'chat',side_effect=chat):
+            r=self.make_run(workflow={'schema':'codestudio.modules.v1','modules':plan['modules']},limits={'repairs':3}).execute()['receipt']
+        self.assertEqual(r['status'],'succeeded',r.get('error'))
+        self.assertEqual(models,['local','local','backup'])
+        self.assertEqual(r['model_switches'][0]['reason'],'two_unsuccessful_module_attempts')
+
+    def test_repeated_qc_rejections_also_switch_configured_model(self):
+        self.config['ollama_url']='http://127.0.0.1:11439';self.config['autonomous_fallback_models']=['backup']
+        plan=workflow();plan['modules']=plan['modules'][1:];plan['modules'][0]['depends_on']=[]
+        models=[]
+        def chat(role,prompt,model):
+            if role=='reviewer':return OK if model=='backup' else {'verdict':'reject','issues':['missing required behavior'],'summary':'reject'}
+            models.append(model)
+            return {'edits':[{'path':'app.py','op':'create' if len(models)==1 else 'write',
+                              'content':f'def show(n): return str(n*2)\n# attempt {len(models)}\n'}]}
+        with patch.object(CodeStudioCore,'installed_models',return_value=['local','backup']), patch.object(CodeStudioCore,'chat',side_effect=chat):
+            r=self.make_run(workflow={'schema':'codestudio.modules.v1','modules':plan['modules']},limits={'repairs':3}).execute()['receipt']
+        self.assertEqual(r['status'],'succeeded',r.get('error'))
+        self.assertEqual(models,['local','local','backup'])

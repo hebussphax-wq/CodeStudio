@@ -231,7 +231,7 @@ class CodeStudioCore:
         if 'think' in self.config:
             body['think'] = self.config['think']
         raw = ""
-        for attempt in (1, 2):
+        for attempt in ((1,) if getattr(self, 'single_attempt', False) else (1, 2)):
             response = self.ollama_request("/api/chat", body)
             metrics = {k:response[k] for k in ('done_reason','total_duration','load_duration','prompt_eval_count','eval_count','eval_duration') if k in response}
             self.log('Modellmessung: '+json.dumps({'role':role,'model':model,**metrics}))
@@ -249,7 +249,7 @@ class CodeStudioCore:
                     return self.validate_chat_result(role,obj)
             except json.JSONDecodeError:
                 pass
-            if attempt == 1:
+            if attempt == 1 and not getattr(self, 'single_attempt', False):
                 body["messages"].append({"role": "assistant", "content": raw})
                 body["messages"].append({"role": "user", "content": "Nur gültiges JSON-Objekt ausgeben."})
         raise ModelOutputError(f"{role} lieferte kein gültiges JSON", {'role':role,'model':model,
@@ -575,7 +575,7 @@ class CodeStudioCore:
         if lessons:
             feedback = 'Frühere Fehlschläge bei identischem Ausgangsstand (Diagnosedaten):\n' + redact(json.dumps(lessons, ensure_ascii=False))
         receipt['learning'] = {'key': lesson_key, 'reused_failures': len(lessons)}
-        max_rounds = int(self.config.get("max_review_rounds", 2))
+        max_rounds = 0 if getattr(self, 'single_attempt', False) else int(self.config.get("max_review_rounds", 2))
         for rnd in range(1, max_rounds + 2):
             self.log(f"Coder Runde {rnd} …")
             prompt = f"AUFGABE:\n{task}\n\nPLAN:\n{json.dumps(plan.get('plan', []), ensure_ascii=False)}\n\nAKZEPTANZ:\n{json.dumps(plan.get('acceptance', []), ensure_ascii=False)}\n\nDATEIEN:\n{json.dumps(ctx, ensure_ascii=False)}"

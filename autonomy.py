@@ -184,6 +184,8 @@ class AutonomousRun:
         self.emit = emit
         self.cancel_event = threading.Event()
         self.core = AutonomousCore(root, config, log=lambda msg:emit({'event':'log','text':redact(msg)}), transport=transport)
+        # The outer workflow owns coder and malformed-output retries.
+        self.core.single_attempt = True
         self.core.module_mode = bool(self.workflow)
         self.core.cancel_event = self.cancel_event
         self.core.deadline = time.monotonic()+self.limits['seconds']
@@ -656,7 +658,7 @@ class AutonomousRun:
             self.save()
             feedback=''
             review_failure=''
-            failed_tests=0
+            failed_attempts=0
             for attempt in range(self.limits['repairs']+1):
                 test=None
                 proposal_failure=None
@@ -667,7 +669,6 @@ class AutonomousRun:
                 try:
                     result,test=self.proposal(task)
                     if test.get('returncode')==0 or test.get('status')=='deferred':
-                        failed_tests=0
                         self.unchanged()
                         context={}; review_bytes=0
                         for p in dict.fromkeys(module['files']+module['references']):
@@ -684,6 +685,7 @@ class AutonomousRun:
                         review_prompt='ORIGINAL TASK (scope this review to the current module):\n'+self.task+'\nMODULE PLAN (original requirements and test assertions take precedence):\n'+module['contract']+'\nIMPLEMENTATION AND READ-ONLY REFERENCES (test modes for other modules are not requirements for this module):\n'+source_text+'\nEXECUTED TESTS:\n'+test.get('output','')
                         review=self.core.chat('reviewer',review_prompt,self.model)
                         if review.get('verdict')!='ok':
+                            self.core.log('Autonom: QC-Ablehnung am selben Quellstand gegenprüfen (zweite Modellprüfung)')
                             self.receipt['attempts'][-1]['initial_module_review']=review
                             review=self.core.chat('reviewer',review_prompt+'\nBESTRITTENE ABLEHNUNG / DISPUTED REVIEW:\n'+json.dumps(review,ensure_ascii=False)+'\nReconcile every claim with actual source behavior. Retain confirmed defects; withdraw claims contradicted by the source. Passing tests alone do not establish correctness.',self.model)
                         self.receipt['attempts'][-1]['module_review']=review
@@ -708,9 +710,8 @@ class AutonomousRun:
                     analysis=self.record_failure({'output':feedback,'status':'failed'})
                 feedback+='\nPROGRAMMATISCHE FEHLERANALYSE (keine erfundene Reparaturanweisung):\n'+json.dumps({
                     k:analysis[k] for k in ('kind','known','locations','source_excerpts','comparison','unknown','next_action')},ensure_ascii=False)
-                if test is not None and test.get('status')=='failed':
-                    failed_tests+=1
-                if failed_tests>=2 and attempt<self.limits['repairs'] and 'coder' not in module['models']:
+                failed_attempts+=1
+                if failed_attempts>=2 and attempt<self.limits['repairs'] and 'coder' not in module['models']:
                     previous=getattr(self.core,'fallback_model',None) or self.model
                     while self.fallback_index<len(self.fallbacks) and self.fallbacks[self.fallback_index]==previous:
                         self.fallback_index+=1
@@ -719,13 +720,14 @@ class AutonomousRun:
                         self.core.checkpoint();self.unchanged()
                         self.core.fallback_model=replacement
                         self.receipt.setdefault('model_switches',[]).append({'module':module['id'],
-                            'from':previous,'to':replacement,'reason':'two_executed_module_tests_failed',
+                            'from':previous,'to':replacement,'reason':'two_unsuccessful_module_attempts',
+                            'failure_fingerprint':analysis['fingerprint'],
                             'source':{p:self.expected.get(p) for p in module['files']},
                             'test_sha256':digest(canonical(test)),
                             'remaining_model_calls':self.core.max_model_calls-self.core.model_calls,
                             'remaining_seconds':max(0,self.core.deadline-time.monotonic())})
                         self.core.log('Autonom: lokales Ersatzmodell '+replacement+' innerhalb des bestehenden Budgets')
-                        failed_tests=0
+                        failed_attempts=0
                         self.save()
                 # A rejected/no-op proposal is a separate attempt, but unchanged test
                 # evidence may reuse its earlier advisory diagnosis without a new call.

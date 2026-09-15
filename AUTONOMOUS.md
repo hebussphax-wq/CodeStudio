@@ -41,6 +41,11 @@ Reparaturanweisungen. Nur bei nicht eindeutig klassifizierbarer Ausgabe kann
 eine zusätzliche begrenzte Modelldiagnose helfen. Deren Aussagen bleiben
 unbestätigte Hypothesen; vorhandene Tests bleiben unverändert.
 
+Im autonomen Modus gibt es genau einen Coder-Ausgabeversuch pro äußerem Versuch.
+Auch ungültiges JSON wird an diesen Ablauf zurückgegeben; der alte Diff-Kern
+startet keine verborgenen zusätzlichen Coder- oder Format-Reparaturrunden.
+Der freie Analyze-/Diff-Modus behält seine eigenen begrenzten Reviewrunden.
+
 Standardgrenzen: 6 Schritte, 3 Reparaturen, 30 Minuten, 80 tatsächliche
 Modellanfragen, 32 geänderte Dateien. Grenzen sind keine Leistungsgarantie
 für ein bestimmtes Modell. Modulfehler werden vor abhängigen Schritten repariert.
@@ -59,7 +64,7 @@ Workflowhash und Modulposition im Laufbeleg.
 
 Standalone kann in VS Code unter **Ersatzmodelle** bis zu drei vorhandene Modelle
 desselben lokalen Ollama-Dienstes konfigurieren (`codestudio.fallbackModels`).
-Nach zwei ausgeführten, fehlgeschlagenen Modultests wechselt der nächste bereits
+Nach zwei erfolglosen Modulversuchen (Testfehler, ungültiger Vorschlag oder bestätigte QC-Ablehnung) wechselt der nächste bereits
 budgetierte Reparaturversuch zum nächsten Kandidaten. Der Wechsel gilt danach
 für nicht ausdrücklich gebundene Rollen, auch in späteren Modulen und im QC.
 Es entstehen keine zusätzlichen Versuche, Modellaufrufe oder Zeitbudgets.
