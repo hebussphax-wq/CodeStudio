@@ -60,6 +60,7 @@ function activate(context){
   item('Kontext: '+config().get('contextTokens')+' Tokens','codestudio.context',undefined,'settings'),
   item(hasTests()?'Projekttests eingestellt':'Projekttests einstellen','codestudio.tests',undefined,'beaker'),
   ...(proposal?[...proposal.changes.map(c=>item(c.path,'codestudio.openDiff',c.path,'diff')),item('Geprüften Diff anwenden','codestudio.apply',undefined,'check'),item('Vorschlag verwerfen','codestudio.reject',undefined,'close')]:[]),
+  item('Gestoppten Auftrag mit anderem Ansatz fortsetzen','codestudio.resume',undefined,'debug-continue'),
   item('Autonome Aufträge und QC-Belege','codestudio.history',undefined,'history'),
   item('Ablauf und Belege','codestudio.output',undefined,'output')
  ]};
@@ -166,6 +167,17 @@ function activate(context){
    const yes=await vscode.window.showWarningMessage('Diesen geöffneten Workflow samt sichtbaren Testprogrammen für das gewählte Projekt verwenden?',{modal:true},'Workflow verwenden');
    if(yes==='Workflow verwenden')return commands['codestudio.autonomous']({task:bundle.task,workflow:bundle.workflow,test_profiles:bundle.test_profiles});
   },
+  'codestudio.resume':()=>guard(async()=>{
+   const client=await ensure();if(!client)return;
+   await client.request('configure',configureRequest());
+   const history=await client.request('history');
+   const chosen=await vscode.window.showQuickPick(history.runs.filter(r=>r.resumable).map(r=>({label:r.status+' · '+r.task,description:r.run_id,run:r.run_id})),{placeHolder:'Gesicherten, zurückgerollten Auftrag wählen'});
+   if(!chosen)return;
+   const info=await client.request('resume_info',{run_id:chosen.run});
+   const approach=await vscode.window.showInputBox({prompt:'Was wird konkret geändert? Fehlerursache, präzisere Reparatur oder anderes zuvor gewähltes Modell. Gleiche fehlerhafte Ergebnisse werden nicht erneut getestet.',ignoreFocusOut:true,validateInput:v=>v.trim().length<12?'Geänderten Ansatz konkret beschreiben.':undefined});
+   if(!approach)return;
+   return commands['codestudio.autonomous']({task:info.task,resume_from:chosen.run,changed_approach:approach});
+  }),
   'codestudio.autonomous':options=>guard(async()=>{
    const client=await ensure();if(!client)return;
    if(dirty())throw Error('Offene Änderungen zuerst speichern.');
@@ -181,11 +193,14 @@ function activate(context){
    const watch=setInterval(()=>{if(!stopSent&&(dirty()||settings!==settingsIdentity()||!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===workspace))){stopSent=true;client.request('cancel',{run_id:activeRun}).catch(()=>{});}},250);
    try{
     await client.request('configure',{...configureRequest(),...(options?.test_profiles?{test_profiles:options.test_profiles}:{})});
-    const result=await client.request('autonomous',{run_id:activeRun,approved:true,task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:config().get('model'),limits,...(options?.workflow?{workflow:options.workflow}:{})});
+    const result=await client.request('autonomous',{run_id:activeRun,approved:true,task:options?.resume_from?task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:config().get('model'),limits,...(options?.resume_from?{resume_from:options.resume_from,changed_approach:options.changed_approach}:{}),...(options?.workflow?{workflow:options.workflow}:{})});
     const labels={succeeded:'Autonom abgeschlossen · Tests und QC bestanden',cancelled:'Abgebrochen · Änderungen zurückgerollt',timed_out:'Zeitbudget erreicht · zurückgerollt',budget_exhausted:'Budget erreicht · zurückgerollt',stalled:'Kein Fortschritt nach vier Versuchen · Auftrag gestoppt',failed:'Auftrag fehlgeschlagen · zurückgerollt',conflict:'Fremde Änderung erkannt · Auftrag gestoppt',rollback_conflict:'Konflikt · Sicherung prüfen',recovery_required:'Prozessende unklar · Wiederherstellung prüfen',blocked:'Auftrag blockiert · Ursache prüfen'};
     status=labels[result.receipt.status]||result.receipt.status;
     output.appendLine(status+'\n'+(result.receipt.error||'')+'\n'+(result.receipt.test?.output||'')+'\nBeleg: '+result.receipt_path);
     for(const attempt of result.receipt.attempts||[])output.appendLine(attempt.diff||'');
+    if(result.receipt.candidate_unavailable)output.appendLine(result.receipt.candidate_unavailable);
+    if(result.receipt.candidate)output.appendLine('Kandidat gesichert: '+result.receipt.candidate.path+' · Wiederaufnahme über „Gestoppten Auftrag mit anderem Ansatz fortsetzen“.');
+    if(result.receipt.experience)output.appendLine('Geprüfter Laufbeleg für diese Reparatur: '+result.receipt.experience.path);
     if(result.receipt.blocker_report){
      const report=result.receipt.blocker_report;
      output.appendLine('\nFEHLERANALYSE\n'+report.summary+'\nOrt: '+report.location+

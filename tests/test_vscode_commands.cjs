@@ -1,8 +1,8 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),{EventEmitter}=require('node:events');
 async function exercise(settings,command='codestudio.runTests',autonomousReceipt={status:'succeeded',test:{returncode:0}}){
  const handlers={},requests=[],errors=[],output=[],warnings=[];const uri={scheme:'file',fsPath:'C:/fixture',toString:()=> 'file:///C:/fixture'};
- const vscode={EventEmitter:class{constructor(){this.event=()=>{};}fire(){}},window:{createOutputChannel:()=>({appendLine:x=>output.push(x),show(){}}),registerTreeDataProvider:()=>({}),showInputBox:async()=> 'Build fixture',showWarningMessage:async text=>{warnings.push(text);return 'Autonom entwickeln';},showInformationMessage(){},showErrorMessage:e=>errors.push(e)},workspace:{isTrusted:true,workspaceFolders:[{uri}],textDocuments:[],getConfiguration:()=>({get:(k,d)=>({testCommand:['python','test.py'],model:'local',contextTokens:8192,...settings}[k]??d)}),registerTextDocumentContentProvider:()=>({}),onDidChangeConfiguration:()=>({})},commands:{registerCommand:(k,v)=>(handlers[k]=v,{}),executeCommand:()=>{}}};
- const spawn=()=>{const child=new EventEmitter();child.stdout=new EventEmitter();child.stdout.setEncoding=()=>{};child.stderr={resume(){}};child.stdin=new EventEmitter();child.stdin.write=line=>{const q=JSON.parse(line);requests.push(q);queueMicrotask(()=>child.stdout.emit('data',JSON.stringify({id:q.id,ok:true,result:q.command==='test'?{returncode:0,output:'real test fixture'}:q.command==='autonomous'?{receipt:autonomousReceipt,receipt_path:'fixture.json'}:{}})+'\n'));};child.stdin.end=()=>{};child.kill=()=>{};return child;};
+ const vscode={EventEmitter:class{constructor(){this.event=()=>{};}fire(){}},window:{createOutputChannel:()=>({appendLine:x=>output.push(x),show(){}}),registerTreeDataProvider:()=>({}),showQuickPick:async items=>items[0],showInputBox:async()=> 'Build fixture',showWarningMessage:async text=>{warnings.push(text);return 'Autonom entwickeln';},showInformationMessage(){},showErrorMessage:e=>errors.push(e)},workspace:{isTrusted:true,workspaceFolders:[{uri}],textDocuments:[],getConfiguration:()=>({get:(k,d)=>({testCommand:['python','test.py'],model:'local',contextTokens:8192,...settings}[k]??d)}),registerTextDocumentContentProvider:()=>({}),onDidChangeConfiguration:()=>({})},commands:{registerCommand:(k,v)=>(handlers[k]=v,{}),executeCommand:()=>{}}};
+ const spawn=()=>{const child=new EventEmitter();child.stdout=new EventEmitter();child.stdout.setEncoding=()=>{};child.stderr={resume(){}};child.stdin=new EventEmitter();child.stdin.write=line=>{const q=JSON.parse(line);requests.push(q);queueMicrotask(()=>child.stdout.emit('data',JSON.stringify({id:q.id,ok:true,result:q.command==='history'?{runs:[{run_id:'a'.repeat(32),task:'Original task',status:'stalled',resumable:true}]}:q.command==='resume_info'?{run_id:'a'.repeat(32),task:'Original task with original editor context'}:q.command==='test'?{returncode:0,output:'real test fixture'}:q.command==='autonomous'?{receipt:autonomousReceipt,receipt_path:'fixture.json'}:{}})+'\n'));};child.stdin.end=()=>{};child.kill=()=>{};return child;};
  const box={module:{exports:{}},require:n=>n==='vscode'?vscode:n==='child_process'?{spawn}:n==='fs'?{existsSync:()=>true}:n==='./editor_context'?{collect:()=>({}),taskWithContext:t=>t}:require(n),Buffer,process,setInterval,clearInterval,setTimeout,queueMicrotask};
  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../vscode/extension.js'),'utf8'),box);
  box.module.exports.activate({subscriptions:[],extensionPath:'C:/extension',globalStorageUri:{fsPath:'C:/state'},globalState:{get:()=>true}});
@@ -31,4 +31,14 @@ test('stalled run shows concrete location evidence and next action to the user',
  assert.deepEqual(errors,[]);assert.match(warnings.at(-1),/vier Versuchen.*exit does not reach top/);
  const text=output.join('\n');for(const value of [report.location,report.known,report.unknown,report.next_action])assert.ok(text.includes(value));
  assert.ok(text.includes('Rückrollen bestätigt: ja'));assert.ok(text.includes('fixture.json'));
+});
+
+test('resume command preserves original task and sends explicit new approach',async()=>{
+ const {requests,errors}=await exercise({},'codestudio.resume');
+ assert.deepEqual(errors,[]);
+ assert.deepEqual(requests.map(q=>q.command),['configure','history','resume_info','configure','autonomous']);
+ const req=requests.at(-1);
+ assert.equal(req.resume_from,'a'.repeat(32));assert.equal(req.changed_approach,'Build fixture');
+ assert.equal(req.task,'Original task with original editor context');
+ assert.notEqual(req.run_id,req.resume_from);assert.equal(req.approved,true);
 });

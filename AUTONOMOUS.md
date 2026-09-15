@@ -283,3 +283,15 @@ ausgeführt. Das Modul bleibt bis dahin `reviewed_pending_tests`. Assertionfehle
 fehlende externe Pakete und fehlende Dateien des aktuellen Moduls bleiben Fehler.
 Die Schlussprüfung führt sämtliche Profile streng aus und erlaubt keine offenen
 Abhängigkeiten. Vorgegebene Modul-Workflows behalten ihre strikte Ausführung.
+
+## Nach einem gestoppten Lauf weiterarbeiten
+
+CodeStudio sichert eigene Kandidatendateien vor den Projekttests und vor dem Rückrollen im lokalen Belegspeicher außerhalb des Projekts. Der Kandidat ist ungeprüft; der fehlgeschlagene Lauf bleibt fehlgeschlagen. Ausgangs- und Kandidatenhashes, Originalworkflow, Aufgabe, Lesedateien und Prüfverträge gehören zur Sicherung.
+
+In VS Code **Gestoppten Auftrag mit anderem Ansatz fortsetzen** wählen, einen gesicherten Lauf auswählen und den geänderten Ansatz beschreiben. Ein anderes Modell vorher über die Modellwahl einstellen. Die Beschreibung ist eine Hypothese, kein Erfolgsnachweis. Nur ein beendeter Lauf mit bestätigtem Rollback, intakter Sicherung und unveränderter Basis/Testkonfiguration darf übernommen werden. Bei Änderungen muss der Auftrag neu geplant werden; alte Arbeit wird nicht über fremde Änderungen kopiert.
+
+Die Wiederaufnahme verwendet eine neue Auftrags-ID, eine neue Transaktion und die aktuellen Laufgrenzen. Alle Originalmodule werden erneut geprüft; kein alter grüner Test wird übernommen. Identische Kandidaten mit nachgewiesenen Assertion-/Syntaxfehlern werden bei derselben Modulprüfung nicht erneut angewendet oder getestet. Reviewer-Meinungen und Timeouts erzeugen keine solche Sperre.
+
+Erfolgreiche Wiederaufnahmen erzeugen einen lokalen Experience-Beleg mit Quelllauf, neuem Lauf, Modellverlauf, Prüf- und Ergebnisidentitäten. Dieser belegt das konkrete Ergebnis, keine allgemeingültige Reparaturregel. Es gibt kein automatisches Modelltraining, keine Änderung der Tests oder Rechte und kein Selbstumschreiben des Studios. Alte Läufe ohne Kandidatensicherung lassen sich darüber nicht nachträglich fortsetzen.
+
+Der normale VS-Code-Start speichert Belege außerhalb des Projekts. Bei älteren CLI-Konfigurationen mit Belegspeicher innerhalb des Projekts bleibt der vorhandene Ablauf erhalten, meldet aber ausdrücklich, dass keine sichere Kandidaten-Wiederaufnahme verfügbar ist.

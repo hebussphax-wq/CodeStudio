@@ -125,6 +125,10 @@
       {
         "command": "codestudio.limits",
         "title": "CodeStudio: Laufgrenzen einstellen"
+      },
+      {
+        "command": "codestudio.resume",
+        "title": "CodeStudio: Gestoppten Auftrag mit anderem Ansatz fortsetzen"
       }
     ],
     "configuration": {

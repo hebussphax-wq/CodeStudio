@@ -11,6 +11,7 @@ import uuid
 from urllib.parse import urlsplit
 from core import CodeStudioCore, truncate, SCHEMA, ModelOutputError
 from workflow import normalize_job, job_result
+from runmemory import save_candidate, load_candidate, candidate_signature, record_success, run_id
 from moduleflow import normalize_workflow
 from failureanalysis import analyze_failure, blocker_report
 from processrunner import run_command, ProcessTreeUncertain
@@ -213,6 +214,16 @@ class AutonomousRun:
         self.latest = {}
         self.problem_counts = {}
         self.problem_profiles = {}
+        self.failed_candidates = []
+        self.original_workflow = copy.deepcopy(self.workflow)
+        if request.get('resume_from'):
+            run_id(request['resume_from'])
+            approach=request.get('changed_approach')
+            if not isinstance(approach,str) or not 12<=len(approach.strip())<=4000:
+                raise ValueError('Geänderten Ansatz für die Wiederaufnahme konkret benennen.')
+            ensure_source_text(approach)
+            if self.workflow or self.planning!='modules' or self.job:
+                raise ValueError('Wiederaufnahme verwendet den gesicherten Originalworkflow.')
 
     def record_failure(self, outcome, phase='implementation'):
         analysis=analyze_failure(self.core.workspace,outcome.get('output',''),
@@ -272,6 +283,9 @@ class AutonomousRun:
             raise ValueError('Vorhandene Testdateien/Testprogramme dürfen nicht automatisch abgeschwächt werden.')
         if len(set(self.tx.files)|set(result.final_state)) > 32:
             raise RunStopped('budget_exhausted','Maximal 32 verschiedene Dateien pro autonomem Auftrag.')
+        signature=candidate_signature(self,result.final_state)
+        if signature in self.failed_candidates:
+            raise ProposalRejected('Identischer bereits fehlgeschlagener Kandidat bei unveränderten Tests. Ansatz oder Eingaben wirksam ändern.')
         self.core.claim_proposal(result)
         # Freeze every read file, including new paths. Never absorb concurrent edits.
         for rel,h in result.binding['before'].items(): self.expected.setdefault(rel,h)
@@ -283,13 +297,14 @@ class AutonomousRun:
             if new is None: self.tx.delete(rel)
             else: self.tx.write(rel,new)
             self.expected[rel] = identity(self.core.workspace,rel)
-        attempt = {'proposal_id':result.receipt['tag'],'diff':result.diff,
+        attempt = {'proposal_id':result.receipt['tag'],'diff':result.diff,'candidate_signature':signature,
                    'files':list(result.final_state),'after':{p:self.expected[p] for p in result.final_state},
                    'models':{role:getattr(self.core,'role_models',{}).get(role,getattr(self.core,'fallback_model',None) or self.model)
                              for role in ('planner','coder','reviewer')}}
         if self.module: attempt['module_id'] = self.module['id']
         self.receipt['attempts'].append(attempt)
-        self.save()  # Durable before any test program starts.
+        save_candidate(self)
+        self.save()  # Durable candidate bytes before any test program starts.
         test = self.core.run_tests()
         attempt['test'] = test
         self.latest = test
@@ -297,7 +312,12 @@ class AutonomousRun:
         self.core.checkpoint()
         self.save()
         self.record_test_progress(test)
-        if test.get('returncode') not in (None,0): self.record_failure(test)
+        if test.get('returncode') not in (None,0):
+            evidence=analyze_failure(self.core.workspace,test.get('output',''),status=test.get('status','failed'),protected=self.protected)
+            if evidence['kind'] in ('assertion','syntax'):
+                self.failed_candidates.append(signature)
+            save_candidate(self)
+            self.record_failure(test)
         return result, test
 
     def execute(self):
@@ -331,6 +351,9 @@ class AutonomousRun:
                         info=self.core.ollama_request('/api/show',{'model':model})
                         if 'thinking' not in info.get('capabilities',[]):
                             raise RunStopped('blocked','Denkmodus ist mit Ersatzmodell nicht kompatibel: '+model)
+            if self.request.get('resume_from'):
+                self.restore_candidate()
+                tree=self.core.file_tree()
             if not self.workflow and self.planning == 'modules':
                 self.plan_modules(tree)
             if self.workflow:
@@ -429,6 +452,7 @@ class AutonomousRun:
                         self.core.log('Reparaturvorschlag ungültig: '+str(exc))
                         self.record_failure({'output':str(exc),'status':'failed'},phase='proposal')
                         self.save()
+            record_success(self)
             self.receipt['after'] = {p:identity(self.core.workspace,p) for p in self.tx.files}
             self.receipt['test'] = self.latest
             self.receipt['finished_at'] = time.time()
@@ -451,6 +475,17 @@ class AutonomousRun:
                     self.receipt['blocker_report']['last_test_failure']=analyze_failure(
                         self.core.workspace,self.latest.get('output',''),status=self.latest.get('status','failed'),
                         profile=self.latest.get('name',''),profile_id=self.latest.get('profile_id',''),protected=self.protected)
+            if self.latest.get('returncode') not in (None,0):
+                evidence=analyze_failure(self.core.workspace,self.latest.get('output',''),status=self.latest.get('status','failed'),protected=self.protected)
+                if evidence['kind'] in ('assertion','syntax'):
+                    self.failed_candidates.append(candidate_signature(self,{}))
+            if 'experience' in self.receipt:
+                self.receipt['experience']['status']='invalidated_by_failed_delivery'
+                atomic_bytes(self.core.runs/('experience-'+self.id+'.json'),canonical(self.receipt['experience']))
+            try:
+                save_candidate(self)
+            except Exception as memory_error:
+                self.receipt['candidate_error']=redact(str(memory_error))
             if isinstance(exc,ProcessTreeUncertain):
                 uncertain = True
                 self.receipt['status']='recovery_required'
@@ -486,6 +521,36 @@ class AutonomousRun:
         result = {'receipt':self.receipt,'receipt_path':str(self.path)}
         if self.job: result['workflow_result'] = job_result(self.job,self.receipt,str(self.path))
         return result
+
+    def restore_candidate(self):
+        p=load_candidate(self.core.runs,self.request['resume_from'],self.core.workspace,self.all_tests,self.limits['steps'])
+        if self.task!=p['task']: raise ValueError('Originalauftrag bei Wiederaufnahme verändert.')
+        if self.protected!=p['protected']: raise ValueError('Prüfdateien bei Wiederaufnahme verändert.')
+        self.workflow=normalize_workflow(p['workflow'],len(self.all_tests),self.limits['steps'],allow_pending_tests=True)
+        self.original_workflow=copy.deepcopy(self.workflow)
+        self.original_plan=copy.deepcopy(p.get('plan'))
+        self.receipt['plan']=self.original_plan or {'workflow':self.workflow,'origin':'validated_snapshot'}
+        self.authorized_files={f for m in self.workflow['modules'] for f in m['files']}
+        self.review_paths={f for m in self.workflow['modules'] for f in m['files']+m['references']}
+        self.expected=dict(p['basis'])
+        self.unchanged()
+        # Fresh transaction owns every restored byte; historical tests grant no pass.
+        for rel,entry in p['files'].items():
+            self.core.checkpoint();self.unchanged()
+            if entry['content'] is None:
+                if identity(self.core.workspace,rel) is not None: self.tx.delete(rel)
+            else: self.tx.write(rel,entry['content'])
+            self.expected[rel]=entry['after']
+        self.failed_candidates=list(p.get('failed_candidates',[]))
+        self.resume_evidence=p.get('failure_analysis',[])[-4:]
+        self.core.module_mode=True
+        self.receipt['workflow']=copy.deepcopy(self.workflow)
+        self.receipt['workflow_sha256']=digest(canonical(self.workflow))
+        self.receipt['planning_origin']='validated_original_workflow_resume'
+        self.receipt['resume']={'source_run':p['run_id'],'changed_approach':self.request['changed_approach'],
+            'basis_verified':True,'historical_steps_accepted':False,'source_model':p['model'],
+            'current_model':self.model,'source_options':p['options'],'current_options':self.core.config.get('options',{})}
+        save_candidate(self);self.save()
 
     def plan_modules(self, tree, repair_feedback=None, *, interim_repair=False):
         """Generate and validate contracts before any model-directed project write."""
@@ -621,6 +686,9 @@ class AutonomousRun:
                         continue
                     raise RunStopped('blocked', 'Rückfrage: '+'; '.join(value['questions']))
                 self.workflow = workflow
+                if not repair_feedback:
+                    self.original_workflow=copy.deepcopy(workflow)
+                    self.original_plan=copy.deepcopy(value)
                 if not repair_feedback: self.authorized_files = writes
                 self.review_paths = getattr(self, 'review_paths', set()) | {
                     p for m in workflow['modules'] for p in m['files']+m['references']}
@@ -662,9 +730,11 @@ class AutonomousRun:
             for attempt in range(self.limits['repairs']+1):
                 test=None
                 proposal_failure=None
-                self.core.allow_unchanged_module = attempt == 0
+                self.core.allow_unchanged_module = attempt == 0 or bool(self.request.get('resume_from'))
                 self.core.log('Modul '+module['id']+' Versuch '+str(attempt+1))
                 task=('ORIGINAL USER TASK (implement only the current module):\n'+self.task+'\nGENERATED MODULE PLAN:\n'+module['contract']+'\nThe original requirements and unchanged test assertions are authoritative. Correct any conflicting implementation suggestion in the generated plan; preserve the bounded file scope.\nNur diese Dateien ändern: '+json.dumps(module['files']))
+                if self.request.get('resume_from'):
+                    task+='\nWIEDERAUFNAHME: '+self.request['changed_approach']+'\nDer geänderte Ansatz ist eine zu prüfende Hypothese, keine bestätigte Reparatur. Frühere Fehlerbelege:\n'+json.dumps(self.resume_evidence,ensure_ascii=False)
                 if feedback: task+='\nTESTDIAGNOSE (vor nächstem Modul beheben):\n'+feedback
                 try:
                     result,test=self.proposal(task)

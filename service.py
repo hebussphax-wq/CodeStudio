@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from autonomy import AutonomousRun, fallback_models
 from core import CodeStudioCore
+from runmemory import load_candidate
 from safety import canonical, redact, safe_path
 
 def local_ollama_url(value):
@@ -57,7 +58,7 @@ class StudioService:
             for file in sorted(self.core.runs.glob('autonomous-*.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:30]:
                 try:
                     r=json.loads(file.read_text(encoding='utf8'))
-                    if r.get('workspace')==str(self.core.workspace):entries.append({'run_id':r['run_id'],'status':r['status'],'task':r.get('task','')[:180],'receipt_path':str(file)})
+                    if r.get('workspace')==str(self.core.workspace):entries.append({'run_id':r['run_id'],'status':r['status'],'task':r.get('task','')[:180],'receipt_path':str(file),'resumable':bool(r.get('candidate') and r.get('rollback_verified') and r.get('status') in ('stalled','failed','budget_exhausted','timed_out','cancelled','blocked'))})
                 except (ValueError,OSError,KeyError): pass
             return {'runs':entries}
         if command == 'cancel':
@@ -77,6 +78,10 @@ class StudioService:
 
     def _handle(self, request):
         command = request.get('command')
+        if command == 'resume_info':
+            p=load_candidate(self.core.runs,request.get('run_id'),self.core.workspace,self.core.config['tests'])
+            return {'run_id':p['run_id'],'task':p['task'],'files':list(p['files']),
+                'source_model':p['model'],'failure_analysis':p.get('failure_analysis',[])[-4:]}
         if command == 'test':
             if not self.core.config.get('tests'):
                 raise ValueError('Zuerst Projekttests konfigurieren.')
