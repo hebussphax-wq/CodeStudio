@@ -301,3 +301,8 @@ Explizite Markdown-Dateiverträge (z. B. „Required files“ oder „Dateien un
 Module können bis zu 24 eindeutige Lesereferenzen enthalten. Die Grenzen für vollständig gelesene Dateien, Gesamtbytes und Modellkontext bleiben bestehen. Eine Wiederaufnahme-Neuplanung muss alle bereits restaurierten Kandidatendateien ausdrücklich einem Modul zur erneuten Prüfung zuordnen.
 
 Ist ein vollständiger früherer Planvorschlag mit passender Inhaltsprüfsumme im Quellbeleg erhalten, wird er bei der Wiederaufnahme zuerst gegen die aktuellen Regeln geprüft. Ein gültiger Vorschlag spart einen erneuten Planeraufruf; ein ungültiger Vorschlag erhält keine Freigabe.
+
+
+### Durchgehende Stoppschwelle
+
+Vier erfolglose Arbeitsversuche ohne ein durch Tests und Review verifiziertes Modul stoppen den Lauf mit Kandidatensicherung, Rückrollen und Fehlerbericht. Geänderte Fehlermeldungen, ein Ersatzmodell oder ein neuer Reparaturplan setzen diesen Zähler nicht zurück. Ein früheres Modul ohne ausgeführte Tests gilt dafür nicht als verifizierter Fortschritt. Erst ein bestandenes Modul erlaubt die Reparatur weiterer unabhängiger Fehler mit neuem Zähler. Der Gesamtzeit- und Modellaufrufrahmen bleibt unverändert.

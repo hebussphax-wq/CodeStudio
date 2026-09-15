@@ -212,6 +212,7 @@ class AutonomousRun:
         self.protected = {}
         self.expected = {}
         self.latest = {}
+        self.unverified_attempts = 0
         self.problem_counts = {}
         self.problem_profiles = {}
         self.failed_candidates = []
@@ -791,6 +792,9 @@ class AutonomousRun:
                         self.receipt['steps'].append({'number':number,'id':module['id'],
                             'status':'verified' if module['tests'] and test.get('status')!='deferred' else 'reviewed_pending_tests','proposal_id':result.receipt['tag'],
                             'tests':checked[:], 'after':{p:self.expected[p] for p in module['files'] if p in self.expected}})
+                        if test.get('returncode') == 0:
+                            self.unverified_attempts = 0
+                            self.receipt['unverified_attempts'] = 0
                         self.save(); break
                     feedback=test.get('output','Test fehlgeschlagen')
                 except ProposalRejected as exc:
@@ -805,6 +809,22 @@ class AutonomousRun:
                     analysis=self.record_failure({'output':feedback,'status':'failed'})
                 feedback+='\nPROGRAMMATISCHE FEHLERANALYSE (keine erfundene Reparaturanweisung):\n'+json.dumps({
                     k:analysis[k] for k in ('kind','known','locations','source_excerpts','comparison','unknown','next_action')},ensure_ascii=False)
+                # One unresolved work budget spans changed symptoms, models and plans.
+                # Only a test-backed, reviewed module establishes verified progress.
+                self.unverified_attempts += 1
+                self.receipt['unverified_attempts'] = self.unverified_attempts
+                if self.unverified_attempts >= 4:
+                    report = blocker_report(analysis, self.unverified_attempts)
+                    report['attempt_scope'] = 'work_since_last_verified_module'
+                    report['summary'] = ('Vier erfolglose Arbeitsversuche ohne verifiziertes Modul; '
+                        'auch geänderte Fehlermeldungen oder neue Pläne setzen die Grenze nicht zurück. '
+                        + analysis['known'][:500])
+                    self.receipt['blocker_report'] = report
+                    self.receipt.setdefault('module_failures', []).append({
+                        'module': module['id'], 'attempt': attempt+1, 'diagnosis': feedback[:12000]})
+                    self.final_feedback = None
+                    self.save()
+                    raise RunStopped('stalled', report['summary'])
                 failed_attempts+=1
                 if failed_attempts>=2 and attempt<self.limits['repairs'] and 'coder' not in module['models']:
                     previous=getattr(self.core,'fallback_model',None) or self.model

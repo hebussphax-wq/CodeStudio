@@ -62,7 +62,7 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(len(r['test']['results']),2)
         self.assertTrue((self.project/'app.py').is_file())
         self.assertIn('returning str(double(n))',next(p for role,p in prompts if role=='coder' and 'JETZT' not in p and 'Nur diese Dateien ändern: ["app.py"]' in p))
-    def test_nested_early_repairs_preserve_each_continuation(self):
+    def test_nested_early_repairs_cannot_reset_unverified_attempts(self):
         (self.project/'test_values.py').write_text('from values import double\nassert double(4)==8, "positive value"\nassert double(-2)==-4, "negative value"\n')
         self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
         initial=workflow();initial['modules'][0]['tests']=[0];initial['modules'][1]['tests']=[1]
@@ -76,11 +76,49 @@ class DirectorTests(unittest.TestCase):
             create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
         with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)):
             r=self.make_run(limits={'repairs':2}).execute()['receipt']
+        self.assertEqual(r['status'],'stalled',r.get('error'))
+        self.assertEqual(len(r['attempts']),4)
+        self.assertEqual(len(r['integration_repairs']),1)
+        self.assertEqual(r['blocker_report']['attempt_scope'],'work_since_last_verified_module')
+        self.assertTrue(r['rollback_verified'])
+        self.assertFalse((self.project/'values.py').exists())
+        self.assertFalse((self.project/'app.py').exists())
+    def test_verified_module_resets_work_failure_count(self):
+        (self.project/'test_values.py').write_text('from values import double\nassert double(4)==8\n')
+        self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
+        plan=workflow();plan['modules'][0]['tests']=[0];plan['modules'][1]['tests']=[1]
+        def write(path,content):return {'edits':[{'path':path,'op':'write','content':content}]}
+        replies=iter([plan,create('values.py','def double(n): return n*3\n'),
+            write('values.py','def double(n): return n*4\n'),write('values.py','def double(n): return n*2\n'),OK,
+            create('app.py','def show(n): return "wrong one"\n'),write('app.py','def show(n): return "wrong two"\n'),
+            write('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)):
+            r=self.make_run(limits={'repairs':3}).execute()['receipt']
         self.assertEqual(r['status'],'succeeded',r.get('error'))
-        self.assertEqual([s['id'] for s in r['steps']],['repair-two','repair-one','values','app'])
-        self.assertEqual([x['module'] for x in r['resumed_workflows']],['repair-one','values'])
-        self.assertEqual(len(r['integration_repairs']),2)
-        self.assertEqual(r['test']['returncode'],0);self.assertEqual(len(r['test']['results']),2)
+        self.assertEqual(len(r['module_failures']),4)
+        self.assertEqual(r['unverified_attempts'],0)
+        self.assertNotIn('blocker_report',r)
+
+    def test_four_changed_errors_stop_before_another_plan(self):
+        (self.project/'test_values.py').write_text("from values import double\nassert double(1)==2, \"first\"\nassert double(2)==4, \"second\"\nassert double(3)==6, \"third\"\nassert double(4)==8, \"fourth\"\n")
+        self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
+        plan=workflow();plan['modules'][0]['tests']=[0];plan['modules'][1]['tests']=[1]
+        codes=['def double(n): return 0\n',
+               'def double(n): return 2 if n==1 else 0\n',
+               'def double(n): return n*2 if n<=2 else 0\n',
+               'def double(n): return n*2 if n<=3 else 0\n']
+        replies=iter([plan]+[{'edits':[{'path':'values.py','op':'create' if i==0 else 'write','content':code}]} for i,code in enumerate(codes)])
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)) as chat:
+            r=self.make_run(limits={'repairs':3}).execute()['receipt']
+        self.assertEqual(r['status'],'stalled',r.get('error'))
+        self.assertEqual(chat.call_count,5)
+        self.assertEqual(len(r['attempts']),4)
+        self.assertEqual(len({f['fingerprint'] for f in r['failure_analysis']}),4)
+        self.assertNotIn('integration_repairs',r)
+        self.assertEqual(r['blocker_report']['attempt_scope'],'work_since_last_verified_module')
+        self.assertTrue(r['rollback_verified']);self.assertIn('candidate',r)
+        self.assertFalse((self.project/'values.py').exists())
+
     def test_same_failure_stops_after_four_attempts_across_replanning(self):
         (self.project/'test_values.py').write_text('from values import double\nassert double(4)==8, "positive value"\n')
         self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
