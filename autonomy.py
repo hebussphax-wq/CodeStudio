@@ -479,12 +479,23 @@ class AutonomousRun:
                     key=digest(canonical({'module':module['id'],'source':current,'test':self.latest.get('output','')}))
                     reused=key in diagnosis_cache
                     if not reused:
-                        diagnosis=self.core.chat('planner','DIAGNOSE A FAILED MODULE, do not create code. Determine the root cause from actual source and failing test. Return a short plan of precise repairs including affected expressions, files limited to the module. Do not repeat the feature specification or propose changing tests.\nCONTRACT:\n'+module['contract']+'\nFAILED TEST:\n'+self.latest.get('output','')+'\nSOURCE:\n'+'\n\n'.join('FILE '+p+'\n'+text for p,text in current.items()),self.model)
-                        plan=diagnosis.get('plan')
-                        if not isinstance(plan,list) or not 1<=len(plan)<=6 or not all(isinstance(p,str) and len(p)<=1500 for p in plan):raise RunStopped('blocked','Kein gültiger begrenzter Reparaturplan.')
-                        diagnosis_cache[key]=plan
+                        try:
+                            diagnosis=self.core.chat('planner','DIAGNOSE A FAILED MODULE, do not create code. Determine the root cause from actual source and failing test. Return at most 3 short repair steps (600 characters each) including affected expressions, files limited to the module. Do not repeat the feature specification or propose changing tests.\nCONTRACT:\n'+module['contract']+'\nFAILED TEST:\n'+self.latest.get('output','')+'\nSOURCE:\n'+'\n\n'.join('FILE '+p+'\n'+text for p,text in current.items()),self.model)
+                            plan=diagnosis.get('plan')
+                            if not isinstance(plan,list) or not 1<=len(plan)<=3 or not all(isinstance(p,str) and p.strip() and len(p)<=600 for p in plan):
+                                raise ValueError('Diagnose benötigt 1–3 nichtleere Reparaturschritte mit höchstens 600 Zeichen.')
+                            diagnosis_cache[key]=plan
+                        except RunStopped: raise
+                        except (ValueError, RuntimeError) as exc:
+                            # Diagnosis is advisory; actual failing tests remain authoritative.
+                            # Do not spend another identical diagnosis call after a no-op.
+                            diagnosis_cache[key]=[]
+                            self.receipt.setdefault('diagnosis_errors',[]).append({'module':module['id'],
+                                'input_sha256':key,'error':redact(str(exc)),
+                                'action':'continue_bounded_coder_repair_with_original_test_failure'})
                     self.unchanged();self.core.checkpoint()
-                    feedback+='\nROOT CAUSE AND REPAIR PLAN (do not change tests):\n'+'\n'.join(diagnosis_cache[key])
+                    if diagnosis_cache[key]:
+                        feedback+='\nROOT CAUSE AND REPAIR PLAN (do not change tests):\n'+'\n'.join(diagnosis_cache[key])
                     self.receipt.setdefault('repair_diagnoses',[]).append({'module':module['id'],'input_sha256':key,'reused':reused,'plan':diagnosis_cache[key]})
                 self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
                 self.save()

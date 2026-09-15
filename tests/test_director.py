@@ -93,6 +93,24 @@ class DirectorTests(unittest.TestCase):
         with patch('autonomy.run_command',return_value={'returncode':0,'status':'passed','output':'# tests 0\n# pass 0\n'}):
             result=run.core.run_tests()
         self.assertEqual(result['status'],'no_tests');self.assertNotEqual(result['returncode'],0)
+    def test_invalid_advisory_diagnosis_does_not_prevent_test_driven_repair(self):
+        self.config['repair_diagnosis']=True
+        plan=workflow();plan['modules']=[{'id':'app','contract':'app.py exports show(n) returning str(n*2).',
+            'files':['app.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]
+        replies=iter([plan,create('app.py','def show(n): return str(n*3)\n'),{'plan':['too long '*300]},
+            {'edits':[{'path':'app.py','op':'write','content':'def show(n): return str(n*2)\n'}]},OK,OK])
+        prompts=[]
+        def chat(role,prompt,model):
+            if role=='coder':prompts.append(prompt)
+            return next(replies)
+        with patch.object(CodeStudioCore,'chat',side_effect=chat):r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'succeeded');self.assertEqual(len(r['diagnosis_errors']),1)
+        self.assertIn('AssertionError',prompts[-1]);self.assertNotIn('too long',prompts[-1])
+    def test_repair_output_schema_matches_runtime_bounds(self):
+        run=self.make_run();run.core.module_mode=True
+        schema=run.core.output_schema('planner')
+        self.assertEqual(schema['properties']['plan']['maxItems'],3)
+        self.assertEqual(schema['properties']['plan']['items']['maxLength'],600)
     def test_final_review_triggers_bounded_replanning_without_operator(self):
         repair=workflow();repair['modules']=[{'id':'repair','contract':'Add required description to app.py without changing show.',
             'files':['app.py'],'references':['test_app.py','values.py'],'depends_on':[],'tests':[0]}]

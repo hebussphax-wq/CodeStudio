@@ -169,6 +169,15 @@ class CodeStudioCore:
         if role == 'planner' and getattr(self, 'director_mode', False):
             from director import DIRECTOR_SCHEMA
             return DIRECTOR_SCHEMA
+        if role == 'planner' and getattr(self, 'module_mode', False):
+            schema = copy.deepcopy(SCHEMA['planner'])
+            schema['properties']['plan'].update(minItems=1, maxItems=3,
+                items={'type':'string','maxLength':600})
+            schema['properties']['files'].update(maxItems=4)
+            schema['properties']['questions'].update(maxItems=2)
+            schema['properties']['acceptance'].update(maxItems=3)
+            schema['additionalProperties'] = False
+            return schema
         if role == 'coder' and getattr(self,'module_mode',False):
             return {'type':'object','properties':{'edits':{'type':'array','minItems':1,'maxItems':4,
                 'items':{'type':'object','properties':{'path':{'type':'string'},'op':{'type':'string','enum':['create','write','delete']},'content':{'type':'string'}},'required':['path','op','content'],'additionalProperties':False}},'notes':{'type':'string','maxLength':300}},'required':['edits','notes'],'additionalProperties':False}
