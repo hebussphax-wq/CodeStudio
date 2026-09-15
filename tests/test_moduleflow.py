@@ -58,9 +58,24 @@ class ModuleTests(unittest.TestCase):
   with patch.object(core,'ollama_request',return_value={'done_reason':'length','message':{'content':'{}'}}):
    with self.assertRaisesRegex(RuntimeError,'abgeschnitten'):core.chat('coder','x','small')
 
- def test_overlapping_reference_rejected(self):
+ def test_overlapping_reference_stripped_write_wins(self):
+  # SoftKI: model often puts write target in references; strip then validate (write wins).
   self.workflow['modules'][0]['references']=['calc.py']
-  with self.assertRaises(ValueError):self.run_new()
+  run = self.run_new()
+  self.assertEqual(run.workflow['modules'][0]['files'], ['calc.py'])
+  self.assertEqual(run.workflow['modules'][0]['references'], [])
+
+ def test_overlapping_reference_normalize_direct(self):
+  flow = {
+   'schema':'codestudio.modules.v1',
+   'modules':[{
+    'id':'m','contract':'write hello','files':['hello_planvertrag.txt'],
+    'references':['hello_planvertrag.txt'],'tests':[0],'models':{'coder':'c'}
+   }]
+  }
+  out = normalize_workflow(flow, 1, 6)
+  self.assertEqual(out['modules'][0]['files'], ['hello_planvertrag.txt'])
+  self.assertEqual(out['modules'][0]['references'], [])
  def test_original_task_review_can_reject_green_modules(self):
   run=self.run_new()
   with patch.object(CodeStudioCore,'chat',side_effect=[change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,{'verdict':'reject','issues':['missing original feature'],'summary':'incomplete'}]):result=run.execute()['receipt']
