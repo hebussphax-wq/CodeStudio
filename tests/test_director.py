@@ -126,7 +126,10 @@ class DirectorTests(unittest.TestCase):
         repair=workflow();repair['modules']=[{'id':'repair-values','contract':'double(n) must return n*2.',
             'files':['values.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]
         (self.project/'spec.md').write_text('Doubled means multiplied by two.')
+        asset=b'\x89PNG\r\n\x1a\n\0'+b'x'*30000
+        (self.project/'background.png').write_bytes(asset)
         initial=workflow();initial['modules'][0]['references'].append('spec.md')
+        initial['modules'][0]['references'].append('background.png')
         noop={'edits':[{'path':'app.py','op':'write','content':'from values import double\ndef show(n): return str(double(n))\n'}]}
         replies=iter([initial,create('values.py','def double(n): return n*3\n'),OK,
             create('app.py','from values import double\ndef show(n): return str(double(n))\n'),noop,repair,
@@ -137,7 +140,33 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(r['status'],'succeeded');self.assertEqual(len(r['integration_repairs']),1)
         repair_prompt=[p for role,p in calls if role=='planner'][-1]
         self.assertIn('def double(n): return n*3',repair_prompt)
+        self.assertIn('binary_reference',repair_prompt)
+        self.assertIn('background.png',r['final_context'])
+        self.assertEqual((self.project/'background.png').read_bytes(),asset)
+        for role in ('coder','reviewer'):
+            self.assertTrue(any('binary_reference' in p for kind,p in calls if kind==role))
         self.assertIn('spec.md',r['final_context']);self.assertEqual(len(r['plan_history']),2)
+    def test_binary_reference_never_becomes_editable_source_or_secret_bypass(self):
+        (self.project/'asset.bin').write_bytes(b'\0not source')
+        core=self.make_run().core
+        context=core.read_files(['asset.bin'],readonly_assets=True)
+        self.assertIn('binary_reference',context['asset.bin'])
+        self.assertNotIn('asset.bin',core.fully_read)
+        with self.assertRaises(ValueError):core.current_text('asset.bin')
+        with self.assertRaises(ValueError):core.read_files(['asset.bin'])
+        (self.project/'notes.md').write_text('api_key = sk-abcdefghijklmnopqrstuv')
+        with self.assertRaises(ValueError):core.read_files(['notes.md'],readonly_assets=True)
+        with self.assertRaises(ValueError):core.read_reference('../escape.png')
+    def test_binary_reference_change_during_review_is_a_conflict(self):
+        (self.project/'background.png').write_bytes(b'\x89PNG\0original')
+        plan=workflow();plan['modules'][0]['references'].append('background.png')
+        replies=iter([plan,create('values.py','def double(n): return n*2\n'),OK])
+        def chat(role,prompt,model):
+            if role=='reviewer':(self.project/'background.png').write_bytes(b'\x89PNG\0user changed')
+            return next(replies)
+        with patch.object(CodeStudioCore,'chat',side_effect=chat):r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'conflict')
+        self.assertEqual((self.project/'background.png').read_bytes(),b'\x89PNG\0user changed')
     def test_unrelated_earlier_test_does_not_verify_pending_module(self):
         (self.project/'test_values.py').write_text('from values import double\nassert double(4)==8\n')
         self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})

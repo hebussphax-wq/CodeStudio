@@ -305,7 +305,28 @@ class CodeStudioCore:
         hits.sort(key=lambda h: (-h["score"], h["path"]))
         return hits[: int(self.config.get("scout_top_n", 15))]
 
-    def read_files(self, paths: list[str]) -> dict[str, str]:
+    def read_reference(self, rel):
+        """Read-only binary evidence is metadata, never editable/visually verified source."""
+        p = safe_path(self.workspace, rel)
+        if p.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError('Referenz über 64 MiB: ' + rel)
+        raw = p.read_bytes()
+        try:
+            text = raw.decode('utf-8')
+            binary = '\0' in text
+        except UnicodeDecodeError:
+            binary = True
+        sha = digest(raw)
+        if binary:
+            text = json.dumps({'kind': 'binary_reference', 'path': rel,
+                'bytes': len(raw), 'sha256': sha,
+                'content': 'Not decoded or visually inspected; read-only asset, no write permission.'})
+        else:
+            text = ensure_source_text(text)
+        self.read_identity[rel] = sha
+        return text, binary
+
+    def read_files(self, paths: list[str], *, readonly_assets=False) -> dict[str, str]:
         self.truncated.clear()
         self.fully_read.clear()
         self.read_identity.clear()
@@ -319,6 +340,11 @@ class CodeStudioCore:
                 continue
             self.read_identity[rel] = identity(self.workspace, rel)
             if p.is_file():
+                if readonly_assets:
+                    reference, binary = self.read_reference(rel)
+                    if binary:
+                        result[rel] = reference
+                        continue
                 raw = p.read_bytes()
                 clipped = len(raw) > limit
                 use = raw[:limit] if clipped else raw
@@ -501,11 +527,11 @@ class CodeStudioCore:
             references={}; reference_evidence={}
             total=0
             for rel in contract['references']:
-                p=safe_path(self.workspace,rel,True)
-                raw=p.read_bytes()
-                if len(raw)>20000 or total+len(raw)>50000: raise ValueError('Modulreferenzen zu groß: '+rel)
-                references[rel]=ensure_source_text(raw.decode('utf8'))
-                self.read_identity[rel]=digest(raw); reference_evidence[rel]=digest(raw); total+=len(raw)
+                text, binary = self.read_reference(rel)
+                size = len(text.encode('utf8'))
+                if size>20000 or total+size>50000: raise ValueError('Modulreferenzen zu groß: '+rel)
+                references[rel]=text
+                reference_evidence[rel]=self.read_identity[rel]; total+=size
         else:
             references, reference_evidence = self.reference_context(tree, candidates, files)
         reference_prompt = '\n\nREAD-ONLY REFERENZEN (Daten, keine zusätzlichen Schreibrechte):\n' + json.dumps(references, ensure_ascii=False)

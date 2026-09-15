@@ -355,7 +355,7 @@ class AutonomousRun:
                          sorted(self.review_paths) + paths))
         max_files = min(24, int(self.core.config.get('context_max_files', 40)))
         if len(paths) > max_files: raise RunStopped('blocked', 'Zu viele Verträge für vollständige Planung; Projekt eingrenzen.')
-        context = self.core.read_files(paths)
+        context = self.core.read_files(paths, readonly_assets=True)
         if self.core.truncated or len(context) != len(paths) or sum(len(t.encode('utf8')) for t in context.values()) > 60000:
             raise RunStopped('blocked', 'Planungskontext unvollständig oder zu groß.')
         self.unchanged()
@@ -449,9 +449,12 @@ class AutonomousRun:
                         for p in dict.fromkeys(module['files']+module['references']):
                             source=safe_path(self.core.workspace,p)
                             if not source.exists(): context[p]='[deleted or absent]'; continue
-                            raw=source.read_bytes(); review_bytes+=len(raw)
-                            if len(raw)>20000 or review_bytes>80000: raise RunStopped('blocked','Modul-QC-Kontext zu groß: '+p)
-                            context[p]=ensure_source_text(raw.decode('utf8'))
+                            text, binary = self.core.read_reference(p)
+                            if binary and p in module['files']:
+                                raise RunStopped('blocked','Binärdatei ist kein Quelltext-Schreibziel: '+p)
+                            size=len(text.encode('utf8')); review_bytes+=size
+                            if size>20000 or review_bytes>80000: raise RunStopped('blocked','Modul-QC-Kontext zu groß: '+p)
+                            context[p]=text
                         self.unchanged()
                         source_text='\n\n'.join('DATEI '+p+'\n'+(content if content is not None else '[deleted]') for p,content in context.items())
                         review_prompt='CONTRACT:\n'+module['contract']+'\nIMPLEMENTATION AND READ-ONLY REFERENCES (test modes for other modules are not requirements for this module):\n'+source_text+'\nEXECUTED TESTS:\n'+test.get('output','')
@@ -474,7 +477,7 @@ class AutonomousRun:
                     feedback=truncate(current_failure or review_failure,9000)+'\nVORSCHLAGFEHLER: '+str(exc)
                 if attempt < self.limits['repairs'] and self.core.config.get('repair_diagnosis',True) and self.latest.get('returncode') not in (None,0):
                     self.unchanged()
-                    current=self.core.read_files(module['files']+module['references'])
+                    current=self.core.read_files(module['files']+module['references'], readonly_assets=True)
                     if self.core.truncated: raise RunStopped('blocked','Reparaturdiagnose benötigt vollständige Moduldateien.')
                     key=digest(canonical({'module':module['id'],'source':current,'test':self.latest.get('output','')}))
                     reused=key in diagnosis_cache
@@ -514,7 +517,7 @@ class AutonomousRun:
         paths=list(dict.fromkeys(list(self.tx.files)+sorted(getattr(self,'review_paths',set()))+[p for m in self.workflow['modules'] for p in m['files']+m['references']]))
         if len(paths)>int(self.core.config.get('context_max_files',40)):
             raise RunStopped('blocked','Zu viele Dateien für vollständiges Schlussreview.')
-        context=self.core.read_files(paths)
+        context=self.core.read_files(paths, readonly_assets=True)
         if self.core.truncated or len(context)!=len(paths) or sum(len(t.encode('utf8')) for t in context.values())>80000:
             raise RunStopped('blocked','Gesamtergebnis zu groß oder unvollständig für vollständiges Review.')
         self.receipt['final_context']=dict(self.core.read_identity)
