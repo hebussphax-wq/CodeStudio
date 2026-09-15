@@ -1,1 +1,1 @@
-LOAD_FROM_/workspace/AUTONOMY_MCP_CALL_ARGS.json
+file:///workspace/RESTORE_autonomy.py
