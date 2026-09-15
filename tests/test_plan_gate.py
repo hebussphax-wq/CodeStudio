@@ -10,6 +10,7 @@ from plan_gate import (
     ensure_checks,
     lint_plan_acceptance,
     normalize_acceptance,
+    rewrite_check_for_windows,
 )
 
 
@@ -70,6 +71,62 @@ class PlanGateTests(unittest.TestCase):
 
     def test_quantifier_re_hits_german(self):
         self.assertTrue(QUANTIFIER_RE.search("erreichbar vom Start"))
+
+
+
+    def test_rewrite_test_f_on_nt(self):
+        import os
+        from unittest.mock import patch
+        with patch.object(os, "name", "nt"):
+            out = rewrite_check_for_windows(
+                {"name": "exists", "argv": ["test", "-f", "hello_planvertrag.txt"]}
+            )
+        self.assertEqual(out.get("path"), "hello_planvertrag.txt")
+        self.assertNotIn("argv", out)
+
+    def test_rewrite_test_e_on_nt(self):
+        import os
+        from unittest.mock import patch
+        with patch.object(os, "name", "nt"):
+            out = rewrite_check_for_windows(
+                {"name": "exists", "argv": ["test", "-e", "out/file.txt"]}
+            )
+        self.assertEqual(out["path"], "out/file.txt")
+
+    def test_rewrite_grep_on_nt(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            ws = pathlib.Path(d)
+            (ws / "hello.txt").write_text("Planvertrag SoftKI", encoding="utf-8")
+            with patch.object(os, "name", "nt"):
+                out = rewrite_check_for_windows(
+                    {"name": "grep", "argv": ["grep", "-F", "Planvertrag", "hello.txt"]},
+                    workspace=ws,
+                )
+            self.assertIn("argv", out)
+            self.assertTrue(out["argv"][0])  # sys.executable
+            self.assertEqual(out["argv"][1], "-c")
+            self.assertIn("Planvertrag", out["argv"][2])
+
+    def test_ensure_checks_rewrites_test_f_on_nt(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            ws = pathlib.Path(d)
+            plan = {
+                "acceptance": {
+                    "prose": [],
+                    "checks": [{"name": "f", "argv": ["test", "-f", "hello_planvertrag.txt"]}],
+                }
+            }
+            with patch.object(os, "name", "nt"):
+                out = ensure_checks(ws, plan, existing_tests=[])
+            self.assertEqual(len(out), 1)
+            self.assertEqual(out[0]["argv"][1], "-c")
+            self.assertIn("is_file", out[0]["argv"][2])
+            # acceptance stored as path form after normalize
+            self.assertEqual(plan["acceptance"]["checks"][0].get("path"), "hello_planvertrag.txt")
 
 
 if __name__ == "__main__":
