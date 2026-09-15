@@ -67,7 +67,7 @@ def description(value, path):
     ensure_source_text(text)
     return text
 
-def validate_director(value, test_count, max_steps, protected, existing, *, final_tests=True):
+def validate_director(value, test_count, max_steps, protected, existing, *, final_tests=True, required_files=()):
     if not isinstance(value, dict): raise ValueError('Arbeitsplan muss ein Objekt sein.')
     for key, low, high in [('acceptance', 1, 16), ('assumptions', 0, 8), ('questions', 0, 4)]:
         rows = value.get(key)
@@ -107,7 +107,38 @@ def validate_director(value, test_count, max_steps, protected, existing, *, fina
         module['references'] = refs
         earlier[module['id']] = module['files']
         available.update(module['files'])
+    missing=missing_artifacts(flow,required_files,existing)
+    if missing:raise PlanValidationError('deliverables','Fehlende Lieferdateien ohne erzeugendes Modul: '+', '.join(missing))
     # A planner cannot silently omit any caller-selected final gate.
     if final_tests:
         flow['modules'][-1]['tests'] = list(range(test_count))
     return flow
+
+def required_artifacts(context):
+    """Only explicit file-contract lists; ordinary prose and fenced examples are not authority."""
+    import re
+    result={}
+    for source,text in context.items():
+        if not source.lower().endswith('.md'): continue
+        active=False; fence=False
+        for line in text.splitlines():
+            if re.match(r'^\s*(?:```|~~~)',line): fence=not fence;continue
+            if fence or line.startswith('    ') or line.startswith('\t'): continue
+            if line.startswith('#'):
+                title=line.lstrip('#').strip().casefold()
+                active=title in ('required files','required artifacts','output files','dateivertrag','ausgabedateien','dateien und prüfbarer vertrag')
+                continue
+            if not active: continue
+            match=re.match(r'^\s*[-*]\s+([^:]+):',line)
+            if not match: continue
+            names=[part.strip().strip('`') for part in match.group(1).split(',')]
+            if not all(re.fullmatch(r'(?:[\w.-]+/)*[\w.-]+\.[a-zA-Z0-9]{1,12}',p) for p in names):continue
+            for path in names:
+                path=relative(path)
+                result[path]=source
+            if len(result)>32:raise ValueError('Dateivertrag überschreitet 32 Lieferdateien.')
+    return result
+
+def missing_artifacts(flow, required, existing):
+    writes={p for m in flow['modules'] for p in m['files']}
+    return sorted(set(required)-writes-set(existing))

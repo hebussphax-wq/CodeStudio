@@ -550,11 +550,22 @@ class AutonomousRun:
         self.receipt['resume']={'source_run':p['run_id'],'changed_approach':self.request['changed_approach'],
             'basis_verified':True,'historical_steps_accepted':False,'source_model':p['model'],
             'current_model':self.model,'source_options':p['options'],'current_options':self.core.config.get('options',{})}
+        # Older snapshots may carry a plan that never covered an explicit output.
+        from director import required_artifacts, missing_artifacts
+        docs={rel:self.core.read_reference(rel)[0] for rel in p['basis']
+              if pathlib.PurePosixPath(rel).name.lower() in ('readme.md','requirements.md','spec.md')
+              and identity(self.core.workspace,rel) is not None}
+        required=required_artifacts(docs)
+        missing=missing_artifacts(self.workflow,required,self.core.file_tree())
+        if missing:
+            self.receipt['resume']['replanned_missing_artifacts']=missing
+            self.core.log('Autonom: gesicherter Plan enthält keine Erzeuger für '+', '.join(missing)+'; vollständig neu planen')
+            self.plan_modules(self.core.file_tree())
         save_candidate(self);self.save()
 
     def plan_modules(self, tree, repair_feedback=None, *, interim_repair=False):
         """Generate and validate contracts before any model-directed project write."""
-        from director import validate_director
+        from director import validate_director, required_artifacts
         self.core.checkpoint(); self.unchanged()
         preferred = [p for p in tree if pathlib.PurePosixPath(p).name.lower() in
                      ('readme.md', 'requirements.md', 'spec.md', 'agents.md')]
@@ -595,11 +606,15 @@ class AutonomousRun:
         self.unchanged()
         self.expected.update(self.core.read_identity)
         self.receipt['planning_context'] = dict(self.core.read_identity)
+        required_files=required_artifacts({p:t for p,t in context.items() if p in preferred})
+        self.receipt['required_artifacts']=required_files
         prompt = ('ORIGINAL TASK:\n'+self.task+'\nMAXIMUM MODULES: '+str(self.limits['steps'])+
                   '\nAVAILABLE TEST PROFILES (indices are the only permitted test selections):\n'+
                   json.dumps([{'index':i, **p} for i,p in enumerate(self.all_tests)], ensure_ascii=False)+
                   '\nFILE TREE:\n'+'\n'.join(tree)+'\nOMITTED FROM PLANNING CONTEXT (still protected; reference relevant files in module references):\n'+json.dumps(omitted)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
                   '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
+        prompt+='\nEXPLICIT FILE-CONTRACT OUTPUTS (every absent file needs a producing module):\n'+json.dumps(required_files)
+        if getattr(self,'resume_evidence',None):prompt+='\nPRIOR OBSERVED FAILURES (repair these within the original task):\n'+json.dumps(self.resume_evidence)
         if repair_feedback:
             prompt += ('\nCURRENT TEST DEFECTS:\n'+repair_feedback+
                        '\nPlan only repairs of these defects in these already authorized files: '+
@@ -623,7 +638,7 @@ class AutonomousRun:
                     value = self.core.chat('planner', prompt+feedback, self.model)
                     self.unchanged()
                     workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree,
-                                                 final_tests=not interim_repair)
+                                                 final_tests=not interim_repair, required_files=() if repair_feedback else required_files)
                     # Requirements and selected executable test contracts must reach the coder
                     # even when the director forgets to repeat them in its references field.
                     for m in workflow['modules']:
@@ -689,7 +704,7 @@ class AutonomousRun:
                 if not repair_feedback:
                     self.original_workflow=copy.deepcopy(workflow)
                     self.original_plan=copy.deepcopy(value)
-                if not repair_feedback: self.authorized_files = writes
+                if not repair_feedback: self.authorized_files = writes | (set(required_files)-set(self.protected))
                 self.review_paths = getattr(self, 'review_paths', set()) | {
                     p for m in workflow['modules'] for p in m['files']+m['references']}
                 for m in workflow['modules']:

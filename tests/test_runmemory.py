@@ -139,6 +139,20 @@ class RunMemoryTests(unittest.TestCase):
         self.assertEqual(r['test']['returncode'],0)
         self.assertEqual(r['resumed_workflows'][0]['module'],'app')
 
+    def test_legacy_incomplete_plan_is_replanned_on_resume(self):
+        (self.project/'README.md').write_text('## Required files\n- index.html, style.css: frontend\n')
+        with patch('director.required_artifacts',return_value={}):first,r=self.fail_run()
+        complete=workflow();complete['modules'][-1]['files']+=['index.html','style.css']
+        replies=iter([complete,{'edits':[{'path':'values.py','op':'write','content':'def double(n): return n*2\n'}]},OK,
+            {'edits':[{'path':'index.html','op':'create','content':'<!doctype html><p>Done</p>'},
+                      {'path':'style.css','op':'create','content':'p { color: black; }'}]},OK,OK])
+        second=self.make_run(resume_from=first.id,changed_approach='Replan to cover the original explicit file contract')
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *a:next(replies)):r=second.execute()['receipt']
+        self.assertEqual(r['status'],'succeeded',r.get('error'))
+        self.assertEqual(r['resume']['replanned_missing_artifacts'],['index.html','style.css'])
+        self.assertTrue((self.project/'index.html').exists());self.assertTrue((self.project/'style.css').exists())
+        self.assertEqual(r['test']['returncode'],0)
+
     def test_reviewer_opinion_does_not_block_unchanged_recheck(self):
         flow={'schema':'codestudio.modules.v1','modules':[{'id':'app','contract':'show doubles as string',
             'files':['app.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]}
