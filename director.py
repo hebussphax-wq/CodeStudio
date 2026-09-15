@@ -3,7 +3,9 @@ from moduleflow import normalize_workflow
 from safety import relative, ensure_source_text
 
 STRINGS = {'type': 'array', 'items': {'type': 'string'}}
-DESCRIPTION = {'type': 'string', 'minLength': 12, 'maxLength': 2000,
+# Nested finite string repetitions exceed some local grammar compiler limits.
+# Enforce text bounds in description(), after parsing the bounded response.
+DESCRIPTION = {'type': 'string',
                'description': 'A concrete behavior or observable result, not a mode, filename, category or placeholder.'}
 DIRECTOR_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
