@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from core import CodeStudioCore, truncate, SCHEMA, ModelOutputError
 from workflow import normalize_job, job_result
 from moduleflow import normalize_workflow
+from failureanalysis import analyze_failure, blocker_report
 from processrunner import run_command, ProcessTreeUncertain
 from safety import WorkspaceTransaction, atomic_bytes, canonical, digest, identity, relative, redact, ensure_source_text, safe_path
 
@@ -121,7 +122,7 @@ class AutonomousCore(CodeStudioCore):
             outcome = run_command(profile['argv'], self.workspace, timeout, cancel_event=self.cancel_event)
             if outcome['returncode']==0 and re.search(r'\bRan 0 tests?\b|(?:^|\n)\s*(?:#|ℹ)?\s*tests 0\s*(?:\n|$)',outcome['output']):
                 outcome={**outcome,'returncode':126,'status':'no_tests','output':outcome['output']+'\nKeine Tests ausgeführt; kein autonomer Abschluss.'}
-            row = {**outcome, 'name':profile.get('name') or profile['argv'][0],
+            row = {**outcome, 'name':profile.get('name') or profile['argv'][0], 'profile_id':key,
                    'output':truncate(redact(outcome['output']), 12000)}
             dependency=self.pending_dependency(outcome)
             if dependency:
@@ -208,6 +209,32 @@ class AutonomousRun:
         self.protected = {}
         self.expected = {}
         self.latest = {}
+        self.problem_counts = {}
+        self.problem_profiles = {}
+
+    def record_failure(self, outcome, phase='implementation'):
+        analysis=analyze_failure(self.core.workspace,outcome.get('output',''),
+            status=outcome.get('status','failed'),profile=outcome.get('name',''),
+            profile_id=outcome.get('profile_id',''),
+            phase=phase,module=self.module['id'] if self.module else None,protected=self.protected)
+        key=analysis['fingerprint']
+        count=self.problem_counts.get(key,0)+1
+        self.problem_counts[key]=count
+        self.problem_profiles[key]=outcome.get('profile_id') or analysis['test_profile']
+        self.receipt.setdefault('failure_analysis',[]).append({**analysis,'attempts':count})
+        self.last_failure_analysis=analysis
+        self.save()
+        if count>=4:
+            self.receipt['blocker_report']=blocker_report(analysis,count)
+            self.final_feedback=None
+            raise RunStopped('stalled',self.receipt['blocker_report']['summary'])
+        return analysis
+
+    def record_test_progress(self, outcome):
+        passed={row.get('profile_id') or row.get('name','') for row in outcome.get('results',[]) if row.get('returncode')==0}
+        for key,profile in list(self.problem_profiles.items()):
+            if profile and profile in passed:
+                self.problem_counts.pop(key,None);self.problem_profiles.pop(key,None)
 
     def save(self):
         self.receipt['model_calls'] = self.core.model_calls
@@ -267,6 +294,8 @@ class AutonomousRun:
         self.unchanged()
         self.core.checkpoint()
         self.save()
+        self.record_test_progress(test)
+        if test.get('returncode') not in (None,0): self.record_failure(test)
         return result, test
 
     def execute(self):
@@ -303,19 +332,43 @@ class AutonomousRun:
             if not self.workflow and self.planning == 'modules':
                 self.plan_modules(tree)
             if self.workflow:
+                continuations=[]
+                start_index=0
                 for final_attempt in range(self.limits['repairs']+1):
                     self.final_feedback = None
                     try:
-                        self.execute_modules()
+                        while True:
+                            future=[m for flow,index,_ in reversed(continuations)
+                                    for m in flow['modules'][index:]]
+                            self.execute_modules(start_index=start_index, finalize=not continuations,
+                                                 future_modules=future)
+                            if not continuations: break
+                            self.workflow,start_index,original_plan=continuations.pop()
+                            self.receipt['workflow']=copy.deepcopy(self.workflow)
+                            self.receipt['plan']=original_plan
+                            self.receipt['workflow_sha256']=digest(canonical(self.workflow))
+                            self.receipt.setdefault('resumed_workflows',[]).append({
+                                'workflow_sha256':self.receipt['workflow_sha256'],
+                                'module':self.workflow['modules'][start_index]['id'],
+                                'remaining_modules':[m['id'] for m in self.workflow['modules'][start_index:]]})
+                            self.core.log('Autonom: unterbrochenen Modulvertrag prüfen und offenen Arbeitsplan fortsetzen')
+                            self.save()
                         break
                     except RunStopped:
                         if not self.final_feedback or self.request.get('workflow') or final_attempt == self.limits['repairs']:
                             raise
+                        if self.failed_module_index is not None:
+                            continuations.append((copy.deepcopy(self.workflow),self.failed_module_index,
+                                                  copy.deepcopy(self.receipt['plan'])))
                         self.receipt.setdefault('integration_repairs', []).append({
                             'attempt':final_attempt+1, 'feedback':self.final_feedback,
-                            'previous_workflow_sha256':digest(canonical(self.workflow))})
+                            'previous_workflow_sha256':digest(canonical(self.workflow)),
+                            'continuation_modules':[[m['id'] for m in flow['modules'][index:]]
+                                                    for flow,index,_ in continuations]})
                         self.core.log('Autonom: Gesamtbefund in begrenzte Reparaturmodule übersetzen')
-                        self.plan_modules(self.core.file_tree(), self.final_feedback)
+                        self.plan_modules(self.core.file_tree(), self.final_feedback,
+                                          interim_repair=bool(continuations))
+                        start_index=0
             else:
                 plan = self.core.chat('planner','AUTONOMER GESAMTAUFTRAG:\n'+self.task+
                     '\nZerlege in maximal '+str(self.limits['steps'])+' zusammenhängende Implementierungsschritte. '
@@ -339,8 +392,12 @@ class AutonomousRun:
                     except ProposalRejected as exc:
                         self.receipt['steps'].append({'number':number,'task':step,'status':'deferred_to_qc','error':str(exc)})
                         self.core.log('Teilschritt wird durch Gesamtprüfung/Reparatur geklärt: '+str(exc))
+                        self.record_failure({'output':str(exc),'status':'failed'},phase='proposal')
                     self.save()
-                if not self.latest: self.latest = self.core.run_tests()
+                if not self.latest:
+                    self.latest = self.core.run_tests()
+                    self.record_test_progress(self.latest)
+                    if self.latest.get('returncode') not in (None,0): self.record_failure(self.latest,phase='final_testing')
                 for repair in range(self.limits['repairs']+1):
                     self.core.checkpoint()
                     self.unchanged()
@@ -357,6 +414,7 @@ class AutonomousRun:
                             self.receipt['status']='succeeded'
                             break
                         feedback = redact(json.dumps(review,ensure_ascii=False))
+                        self.record_failure({'output':json.dumps(review.get('issues',[])), 'status':'failed'},phase='final_review')
                     else:
                         feedback = 'Projekttest fehlgeschlagen. Aktuell fehlerhafter Code ist noch im Workspace. Repariere ihn, vorhandene Tests nicht ändern.\n'+self.latest.get('output','')
                     if repair == self.limits['repairs']:
@@ -367,6 +425,7 @@ class AutonomousRun:
                     except ProposalRejected as exc:
                         self.receipt.setdefault('repair_errors',[]).append(str(exc))
                         self.core.log('Reparaturvorschlag ungültig: '+str(exc))
+                        self.record_failure({'output':str(exc),'status':'failed'},phase='proposal')
                         self.save()
             self.receipt['after'] = {p:identity(self.core.workspace,p) for p in self.tx.files}
             self.receipt['test'] = self.latest
@@ -377,6 +436,19 @@ class AutonomousRun:
             self.receipt['error'] = redact(str(exc))
             self.receipt['status'] = exc.status if isinstance(exc,RunStopped) else 'failed'
             self.receipt['test'] = self.latest
+            if self.receipt['status']!='cancelled' and 'blocker_report' not in self.receipt:
+                timed=self.receipt['status']=='timed_out'
+                analysis=analyze_failure(self.core.workspace,str(exc),
+                    status='timed_out' if timed else self.receipt['status'],
+                    phase=getattr(self.core,'active_role','execution'),
+                    module=self.module['id'] if self.module else None,protected=self.protected)
+                self.receipt['blocker_report']=blocker_report(analysis,self.problem_counts.get(analysis['fingerprint'],1))
+            if 'blocker_report' in self.receipt:
+                self.receipt['blocker_report']['stop_reason']=redact(str(exc))
+                if self.latest.get('returncode') not in (None,0):
+                    self.receipt['blocker_report']['last_test_failure']=analyze_failure(
+                        self.core.workspace,self.latest.get('output',''),status=self.latest.get('status','failed'),
+                        profile=self.latest.get('name',''),profile_id=self.latest.get('profile_id',''),protected=self.protected)
             if isinstance(exc,ProcessTreeUncertain):
                 uncertain = True
                 self.receipt['status']='recovery_required'
@@ -395,6 +467,8 @@ class AutonomousRun:
             self.receipt['model_history'] = list(self.core.model_history)
             self.receipt['finished_at']=time.time()
             self.receipt['updated_at']=self.receipt['finished_at']
+            if 'blocker_report' in self.receipt:
+                self.receipt['blocker_report']['rollback_verified']=self.receipt.get('rollback_verified',False)
             errors=[]
             for target in (self.path,self.tx.root/'effect-receipt.json'):
                 try: atomic_bytes(target,canonical(self.receipt))
@@ -411,7 +485,7 @@ class AutonomousRun:
         if self.job: result['workflow_result'] = job_result(self.job,self.receipt,str(self.path))
         return result
 
-    def plan_modules(self, tree, repair_feedback=None):
+    def plan_modules(self, tree, repair_feedback=None, *, interim_repair=False):
         """Generate and validate contracts before any model-directed project write."""
         from director import validate_director
         self.core.checkpoint(); self.unchanged()
@@ -460,9 +534,15 @@ class AutonomousRun:
                   '\nFILE TREE:\n'+'\n'.join(tree)+'\nOMITTED FROM PLANNING CONTEXT (still protected; reference relevant files in module references):\n'+json.dumps(omitted)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
                   '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
         if repair_feedback:
-            prompt += ('\nFINAL INTEGRATION DEFECTS:\n'+repair_feedback+
+            prompt += ('\nCURRENT TEST DEFECTS:\n'+repair_feedback+
                        '\nPlan only repairs of these defects in these already authorized files: '+
                        json.dumps(sorted(self.authorized_files))+'. Preserve working behavior. Do not repeat completed implementation.')
+            if interim_repair:
+                prompt += ('\nThis is an INTERIM REPAIR, not final integration. The runtime retains '
+                           'the interrupted module and all unstarted original modules, and resumes them '
+                           'after this repair. Missing future implementation is still pending work, '
+                           'not evidence that other modules are correct. Select only tests suitable '
+                           'for the repaired files at this stage. Do not rebuild the remaining workflow.')
         feedback = ''
         invalid_plans = 0
         clarification_refined = False
@@ -475,7 +555,8 @@ class AutonomousRun:
                 try:
                     value = self.core.chat('planner', prompt+feedback, self.model)
                     self.unchanged()
-                    workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree)
+                    workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree,
+                                                 final_tests=not interim_repair)
                     # Requirements and selected executable test contracts must reach the coder
                     # even when the director forgets to repeat them in its references field.
                     for m in workflow['modules']:
@@ -496,6 +577,7 @@ class AutonomousRun:
                 except ValueError as exc:
                     if value is None and not isinstance(exc, ModelOutputError): raise
                     self.unchanged(); self.core.checkpoint()
+                    self.record_failure({'status':'failed','name':'Arbeitsplanung','output':redact(str(exc))},phase='planning')
                     if isinstance(exc, ModelOutputError):
                         self.receipt.setdefault('model_output_failures', []).append(exc.evidence)
                     self.receipt.setdefault('planning_errors', []).append(redact(str(exc)))
@@ -547,7 +629,8 @@ class AutonomousRun:
                 self.receipt['plan'] = value
                 self.receipt['workflow'] = workflow
                 self.receipt.setdefault('plan_history', []).append({'plan':value, 'workflow':workflow,
-                    'input_identities':dict(self.core.read_identity), 'repair':bool(repair_feedback)})
+                    'input_identities':dict(self.core.read_identity), 'repair':bool(repair_feedback),
+                    'interim_repair':interim_repair})
                 self.receipt['planning_origin'] = 'model_from_original_task'
                 self.receipt['workflow_sha256'] = digest(canonical(workflow))
                 self.save()
@@ -555,15 +638,17 @@ class AutonomousRun:
         finally:
             self.core.director_mode = False
 
-    def execute_modules(self):
+    def execute_modules(self, start_index=0, *, finalize=True, future_modules=()):
         """No dependent work begins until its module and all earlier gates pass."""
-        checked=[]
+        self.failed_module_index=None
+        checked=list(dict.fromkeys(i for m in self.workflow['modules'][:start_index] for i in m['tests']))
         diagnosis_cache={}
-        for number,module in enumerate(self.workflow['modules'],1):
+        for number,module in enumerate(self.workflow['modules'][start_index:],start_index+1):
             self.core.checkpoint(); self.unchanged()
             self.module=module
             seen={p for m in self.workflow['modules'][:number] for p in m['files']}
-            self.core.future_artifacts = {} if self.request.get('workflow') else {p:m['id'] for m in reversed(self.workflow['modules'][number:]) for p in m['files'] if p not in seen}
+            later=list(self.workflow['modules'][number:])+list(future_modules)
+            self.core.future_artifacts = {} if self.request.get('workflow') else {p:m['id'] for m in reversed(later) for p in m['files'] if p not in seen}
             self.core.role_models=module['models']
             checked=list(dict.fromkeys(checked+module['tests']))
             self.core.config['tests']=[self.all_tests[i] for i in checked]
@@ -574,6 +659,7 @@ class AutonomousRun:
             failed_tests=0
             for attempt in range(self.limits['repairs']+1):
                 test=None
+                proposal_failure=None
                 self.core.allow_unchanged_module = attempt == 0
                 self.core.log('Modul '+module['id']+' Versuch '+str(attempt+1))
                 task=('ORIGINAL USER TASK (implement only the current module):\n'+self.task+'\nGENERATED MODULE PLAN:\n'+module['contract']+'\nThe original requirements and unchanged test assertions are authoritative. Correct any conflicting implementation suggestion in the generated plan; preserve the bounded file scope.\nNur diese Dateien ändern: '+json.dumps(module['files']))
@@ -611,8 +697,17 @@ class AutonomousRun:
                         self.save(); break
                     feedback=test.get('output','Test fehlgeschlagen')
                 except ProposalRejected as exc:
+                    proposal_failure=str(exc)
                     current_failure=self.latest.get('output','') if self.latest.get('returncode') not in (None,0) else ''
                     feedback=truncate(current_failure or review_failure,9000)+'\nVORSCHLAGFEHLER: '+str(exc)
+                if test is not None and test.get('returncode') not in (None,0):
+                    analysis=self.last_failure_analysis
+                elif proposal_failure is not None:
+                    analysis=self.record_failure({'output':proposal_failure,'status':'failed'},phase='proposal')
+                else:
+                    analysis=self.record_failure({'output':feedback,'status':'failed'})
+                feedback+='\nPROGRAMMATISCHE FEHLERANALYSE (keine erfundene Reparaturanweisung):\n'+json.dumps({
+                    k:analysis[k] for k in ('kind','known','locations','source_excerpts','comparison','unknown','next_action')},ensure_ascii=False)
                 if test is not None and test.get('status')=='failed':
                     failed_tests+=1
                 if failed_tests>=2 and attempt<self.limits['repairs'] and 'coder' not in module['models']:
@@ -632,7 +727,11 @@ class AutonomousRun:
                         self.core.log('Autonom: lokales Ersatzmodell '+replacement+' innerhalb des bestehenden Budgets')
                         failed_tests=0
                         self.save()
-                if attempt < self.limits['repairs'] and self.core.config.get('repair_diagnosis',True) and self.latest.get('returncode') not in (None,0):
+                # A rejected/no-op proposal is a separate attempt, but unchanged test
+                # evidence may reuse its earlier advisory diagnosis without a new call.
+                diagnostic_analysis=analyze_failure(self.core.workspace,self.latest.get('output',''),
+                    status=self.latest.get('status','failed'),protected=self.protected)
+                if attempt < self.limits['repairs'] and self.core.config.get('repair_diagnosis',True) and diagnostic_analysis['needs_model_diagnosis'] and self.latest.get('returncode') not in (None,0):
                     self.unchanged()
                     current=self.core.read_files(module['files']+module['references'], readonly_assets=True)
                     if self.core.truncated: raise RunStopped('blocked','Reparaturdiagnose benötigt vollständige Moduldateien.')
@@ -666,16 +765,20 @@ class AutonomousRun:
                 self.receipt.setdefault('module_failures',[]).append({'module':module['id'],'attempt':attempt+1,'diagnosis':feedback[:12000]})
                 self.save()
                 if attempt==self.limits['repairs']:
+                    self.failed_module_index=number-1
                     if not self.request.get('workflow') and self.latest.get('returncode') not in (None,0):
                         self.final_feedback = ('Cumulative integration test failed while implementing '+module['id']+
                             '. The defect may be in an earlier module; inspect the current implementation and repair its actual cause.\n'+feedback)
                     raise RunStopped('budget_exhausted','Modul '+module['id']+' nicht verifiziert; abhängige Schritte nicht gestartet.')
         self.module=None; self.core.role_models={}
         self.core.future_artifacts={}
+        if not finalize: return
         self.core.config['tests']=self.all_tests
         self.latest=self.core.run_tests()
         self.unchanged(); self.core.checkpoint()
+        self.record_test_progress(self.latest)
         if self.latest.get('returncode')!=0:
+            self.record_failure(self.latest,phase='final_testing')
             self.final_feedback = 'Final tests failed:\n'+self.latest.get('output','')
             raise RunStopped('failed','Gesamtprüfung fehlgeschlagen; kein Abschluss.')
         paths=list(dict.fromkeys(list(self.tx.files)+sorted(getattr(self,'review_paths',set()))+[p for m in self.workflow['modules'] for p in m['files']+m['references']]))
@@ -691,6 +794,7 @@ class AutonomousRun:
         self.receipt['final_review']=review
         self.unchanged(); self.core.checkpoint()
         if review.get('verdict')!='ok':
+            self.record_failure({'output':json.dumps(review.get('issues',[])), 'status':'failed'},phase='final_review')
             self.final_feedback = 'Final review rejected:\n'+redact(json.dumps(review))
             raise RunStopped('failed','Gesamt-QC hat den Originalauftrag nicht bestätigt: '+redact(json.dumps(review)))
         self.receipt['active_module']=None

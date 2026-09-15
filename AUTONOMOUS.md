@@ -18,12 +18,44 @@ Ein abschließendes Modellreview (QC) prüft die ursprünglichen Akzeptanzkriter
 Nur erfolgreiche Projekttests und ein positives Schlussreview ergeben
 succeeded. Das ist ein Entwicklungsergebnis, keine Host-/Owner-Abnahme.
 
+Die Laufzeit steuert Reihenfolge, Abhängigkeiten, Schreibrechte, Tests, Zeit- und
+Aufrufbudgets durch Programmcode. Modelle planen und implementieren innerhalb
+dieses Ablaufs; sie können seine Grenzen nicht ändern.
+
+Nach vier erfolglosen Versuchen am selben Problem stoppt der Auftrag als
+`stalled`. Neue Modulnamen, Reparaturpläne und Ersatzmodelle setzen den Zähler
+nicht zurück. Geänderte Istwerte allein gelten ebenfalls nicht als Fortschritt.
+Erst ein bestandener betroffener Test setzt dessen Fehlerzähler zurück. Kleinere
+Zeit-, Aufruf- oder Reparaturbudgets können den Auftrag schon früher beenden.
+Bei einem Timeout wird die ausgeführte Phase samt Programmausgabe berichtet;
+das Zeitlimit wird nicht automatisch erhöht.
+
+CodeStudio wertet bekannte Test-, Syntax-, Laufzeit-, Datei- und Timeoutmeldungen
+zuerst programmgesteuert aus. Der Bericht nennt Arbeitsphase, Testprofil,
+Quellstelle, belegte Meldung, gegebenenfalls Soll-/Istwerte, verbleibende
+Unklarheit, Versuchszahl und nächsten Prüfschritt. Eine fehlgeschlagene Assertion
+beweist die verletzte Bedingung, nicht automatisch deren Implementierungsursache.
+Die VS-Code-Ausgabe zeigt diesen Bericht und den Rückrollstatus; eine sichtbare
+Warnung weist auf den Stopp hin. Programmcode erteilt keine erfundenen
+Reparaturanweisungen. Nur bei nicht eindeutig klassifizierbarer Ausgabe kann
+eine zusätzliche begrenzte Modelldiagnose helfen. Deren Aussagen bleiben
+unbestätigte Hypothesen; vorhandene Tests bleiben unverändert.
+
 Standardgrenzen: 6 Schritte, 3 Reparaturen, 30 Minuten, 80 tatsächliche
 Modellanfragen, 32 geänderte Dateien. Grenzen sind keine Leistungsgarantie
 für ein bestimmtes Modell. Modulfehler werden vor abhängigen Schritten repariert.
 Ein Befund aus der Schlussprüfung erzeugt bei automatisch geplanten Aufträgen
 einen weiteren begrenzten Reparaturplan innerhalb der ursprünglichen Schreibpfade.
 Zeit- und Modellbudget gelten über alle Planungs- und Reparaturrunden hinweg.
+
+Scheitert ein frühes Modul, bleibt der ursprüngliche Arbeitsplan erhalten.
+Eine begrenzte Zwischenreparatur behebt den Befund; danach wird der unterbrochene
+Modulvertrag erneut geprüft und die noch offene Arbeit in ihrer ursprünglichen
+Reihenfolge fortgesetzt. Auch eine Reparatur der Reparatur bewahrt diese
+Fortsetzung. Zwischenreparaturen erzwingen keine vorzeitige Gesamtsuite für
+noch fehlende Module. Erst nach allen offenen Modulen folgen sämtliche
+konfigurierten Tests und das Schlussreview. Die Fortsetzungen stehen mit
+Workflowhash und Modulposition im Laufbeleg.
 
 Standalone kann in VS Code unter **Ersatzmodelle** bis zu drei vorhandene Modelle
 desselben lokalen Ollama-Dienstes konfigurieren (`codestudio.fallbackModels`).
@@ -39,7 +71,9 @@ Dienstkonfiguration: `fallback_models`; interne Konfiguration:
 Wechselgrund, Quell-/Testidentitäten, Restbudget und tatsächliche Modelle stehen
 im Laufbeleg. Das verbessert Ausweichmöglichkeiten, garantiert aber keinen Erfolg.
 Das Standardpaket verwendet direkte Antworten ohne separaten Denkmodus und
-höchstens 4096 Ausgabetokens pro Generierung (Review: 1024). Sampling-Werte wie
+standardmäßig höchstens 4096 Ausgabetokens pro Generierung (Review: 1024).
+`codestudio.outputTokens` ist für den freien Auftrag in VS Code einstellbar.
+Sampling-Werte wie
 Temperatur kommen aus dem jeweiligen Ollama-Modell; der Kern überschreibt sie
 standardmäßig nicht. Das Kontextfenster bleibt in VS Code einstellbar.
 
@@ -180,8 +214,10 @@ Testprofile laufen kumulativ weiter. Der letzte Schritt und die Schlussprüfung
 müssen alle Profile bestehen. Leere Python-/Node-Testsuiten werden abgewiesen.
 Für explizite Workflows bleibt ein Testprofil pro Modul verpflichtend.
 
-Planung liest höchstens 24 vollständige Vertragsdateien mit zusammen 60.000 Bytes;
-unvollständiger Kontext blockiert den Auftrag. Ungültige Pfade, Referenzen und
+Planung liest höchstens 24 vollständige Vertragsdateien mit zusammen 60.000 Bytes.
+Anforderungen und verpflichtende Reparaturdateien müssen vollständig hineinpassen;
+sonst blockiert der Auftrag. Weitere ausgelassene Dateien werden ausdrücklich
+aufgeführt und bleiben geschützt. Ungültige Pfade, Referenzen und
 Testindizes erzeugen begrenztes Validierungsfeedback an den Planer vor dem ersten
 Schreiben. Plan, Annahmen, Eingangsidentitäten und Workflowhash werden gespeichert.
 Wirklich fehlende Angaben werden als Rückfrage ausgegeben. Das alte Schrittprotokoll
@@ -219,7 +255,11 @@ Module QC displays source with real line breaks. A model rejection after passing
 
 QC now receives all module files and bounded read-only references. Factual observations precede the verdict, and a review rejection remains in repair feedback after a no-op. Host and direct coders share the same module prompt/schema. Model metadata must be interpreted with the active Ollama renderer. A visible `{{ .Prompt }}` template alone does not prove a broken chat setup: built-in renderers can take precedence. The local template-alias experiment did not establish a repair.
 
-After a failed module test, the planner diagnoses the actual source and test output before the coder attempts repair. The bounded diagnosis is cached by exact module source and failure output, so an unchanged no-op reuses the diagnosis instead of spending another analysis call. Diagnostics never grant new write paths or test-edit permission.
+When programmatic analysis cannot classify a failed test, the planner can examine
+its source and output before the coder repairs it. This bounded advisory diagnosis
+is cached by exact module source and failure output. Known structured errors use
+their direct programmatic evidence without an additional model diagnosis.
+Diagnostics never grant new write paths or test-edit permission.
 
 Diagnostic file targets must belong to the current module's writable files.
 Out-of-scope advice is discarded, retaining the original test failure. Accepted

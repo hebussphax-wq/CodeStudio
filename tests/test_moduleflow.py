@@ -123,6 +123,7 @@ class ModuleTests(unittest.TestCase):
   self.assertEqual(result['status'],'succeeded');self.assertIn('helper=7',reviews[0]);self.assertIn('assert a==2',reviews[0])
 
  def test_failed_test_diagnosis_precedes_coder_and_is_reused_for_noop(self):
+  (self.root/'test_a.py').write_text('import sys\nfrom calc import a\nif a != 2:\n print("Calculator returned wrong value")\n sys.exit(1)\n')
   self.config['repair_diagnosis']=True;run=self.run_new(2);run.core.config['max_review_rounds']=0;calls=[]
   replies=iter([change('a=1\nb=0\n'),{'plan':['Replace wrong initializer a=1 with a=2'],'files':['calc.py'],'questions':[],'acceptance':[]},change('a=1\nb=0\n'),change('a=2\nb=0\n'),OK,change('a=2\nb=3\n'),OK,OK])
   def chat(role,prompt,model):calls.append((role,prompt));return next(replies)

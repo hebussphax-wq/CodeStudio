@@ -182,11 +182,20 @@ function activate(context){
    try{
     await client.request('configure',{...configureRequest(),...(options?.test_profiles?{test_profiles:options.test_profiles}:{})});
     const result=await client.request('autonomous',{run_id:activeRun,approved:true,task:editorContext.taskWithContext(task,editorContext.collect(vscode,folder)),model:config().get('model'),limits,...(options?.workflow?{workflow:options.workflow}:{})});
-    const labels={succeeded:'Autonom abgeschlossen · Tests und QC bestanden',cancelled:'Abgebrochen · Änderungen zurückgerollt',timed_out:'Zeitbudget erreicht · zurückgerollt',budget_exhausted:'Budget erreicht · zurückgerollt',failed:'Auftrag fehlgeschlagen · zurückgerollt',conflict:'Fremde Änderung erkannt · Auftrag gestoppt',rollback_conflict:'Konflikt · Sicherung prüfen',recovery_required:'Prozessende unklar · Wiederherstellung prüfen',blocked:'Rückfrage erforderlich · Auftrag gestoppt'};
+    const labels={succeeded:'Autonom abgeschlossen · Tests und QC bestanden',cancelled:'Abgebrochen · Änderungen zurückgerollt',timed_out:'Zeitbudget erreicht · zurückgerollt',budget_exhausted:'Budget erreicht · zurückgerollt',stalled:'Kein Fortschritt nach vier Versuchen · Auftrag gestoppt',failed:'Auftrag fehlgeschlagen · zurückgerollt',conflict:'Fremde Änderung erkannt · Auftrag gestoppt',rollback_conflict:'Konflikt · Sicherung prüfen',recovery_required:'Prozessende unklar · Wiederherstellung prüfen',blocked:'Auftrag blockiert · Ursache prüfen'};
     status=labels[result.receipt.status]||result.receipt.status;
     output.appendLine(status+'\n'+(result.receipt.error||'')+'\n'+(result.receipt.test?.output||'')+'\nBeleg: '+result.receipt_path);
     for(const attempt of result.receipt.attempts||[])output.appendLine(attempt.diff||'');
-    output.show(true);vscode.window.showInformationMessage(status);return result;
+    if(result.receipt.blocker_report){
+     const report=result.receipt.blocker_report;
+     output.appendLine('\nFEHLERANALYSE\n'+report.summary+'\nOrt: '+report.location+
+      '\nAbbruchgrund: '+(report.stop_reason||report.summary)+'\nBelegt: '+report.known+
+      (report.last_test_failure?'\nLetzter Testfehler: '+report.last_test_failure.test_profile+' · '+report.last_test_failure.known:'')+
+      '\nNoch unklar: '+report.unknown+'\nNächster Schritt: '+report.next_action+
+      '\nRückrollen bestätigt: '+(report.rollback_verified?'ja':'nein; Sicherung prüfen'));
+     vscode.window.showWarningMessage(status+': '+report.known.slice(0,240));
+    }else vscode.window.showInformationMessage(status);
+    output.show(true);return result;
    }finally{clearInterval(watch);activeRun=null;busy=false;changed.fire();}
   }),
   'codestudio.reject':()=>guard(async()=>{if(engine&&!engine.closed)await engine.request('reject');proposal=null;status='Vorschlag verworfen';changed.fire();}),

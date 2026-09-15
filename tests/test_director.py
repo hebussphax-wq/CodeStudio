@@ -40,6 +40,62 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(result['test']['returncode'],0)
         self.assertIn('test_app.py',result['planning_context'])
         self.assertFalse(run.core.director_mode)
+    def test_early_repair_resumes_original_unstarted_modules(self):
+        (self.project/'test_values.py').write_text('from values import double\nassert double(4)==8\n')
+        self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
+        plan=workflow();plan['modules'][0]['tests']=[0];plan['modules'][1]['tests']=[1]
+        repair=copy.deepcopy(plan);repair['modules']=repair['modules'][:1]
+        repair['modules'][0]['id']='repair-values'
+        replies=iter([plan,create('values.py','def double(n): return n*3\n'),
+            {'edits':[{'path':'values.py','op':'write','content':'def double(n): return n*4\n'}]},
+            repair,{'edits':[{'path':'values.py','op':'write','content':'def double(n): return n*2\n'}]},OK,
+            {'edits':[],'notes':'original values contract now satisfied'},OK,
+            create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        prompts=[]
+        def chat(role,prompt,model):
+            prompts.append((role,prompt));return next(replies)
+        with patch.object(CodeStudioCore,'chat',side_effect=chat):
+            r=self.make_run(limits={'repairs':1}).execute()['receipt']
+        self.assertEqual(r['status'],'succeeded',r.get('error'))
+        self.assertEqual([s['id'] for s in r['steps']],['repair-values','values','app'])
+        self.assertEqual(r['test']['returncode'],0)
+        self.assertEqual(len(r['test']['results']),2)
+        self.assertTrue((self.project/'app.py').is_file())
+        self.assertIn('returning str(double(n))',next(p for role,p in prompts if role=='coder' and 'JETZT' not in p and 'Nur diese Dateien ändern: ["app.py"]' in p))
+    def test_nested_early_repairs_preserve_each_continuation(self):
+        (self.project/'test_values.py').write_text('from values import double\nassert double(4)==8, "positive value"\nassert double(-2)==-4, "negative value"\n')
+        self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
+        initial=workflow();initial['modules'][0]['tests']=[0];initial['modules'][1]['tests']=[1]
+        first=copy.deepcopy(initial);first['modules']=first['modules'][:1];first['modules'][0]['id']='repair-one'
+        second=copy.deepcopy(first);second['modules'][0]['id']='repair-two'
+        def write(n):return {'edits':[{'path':'values.py','op':'write','content':f'def double(n): return n*{n}\n'}]}
+        def negative_bug(n):return {'edits':[{'path':'values.py','op':'write','content':f'def double(n): return n*2 if n>=0 else {n}\n'}]}
+        noop={'edits':[],'notes':'contract now satisfied'}
+        replies=iter([initial,create('values.py','def double(n): return n*3\n'),write(4),write(5),
+            first,negative_bug(6),negative_bug(7),negative_bug(8),second,write(2),OK,noop,OK,noop,OK,
+            create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)):
+            r=self.make_run(limits={'repairs':2}).execute()['receipt']
+        self.assertEqual(r['status'],'succeeded',r.get('error'))
+        self.assertEqual([s['id'] for s in r['steps']],['repair-two','repair-one','values','app'])
+        self.assertEqual([x['module'] for x in r['resumed_workflows']],['repair-one','values'])
+        self.assertEqual(len(r['integration_repairs']),2)
+        self.assertEqual(r['test']['returncode'],0);self.assertEqual(len(r['test']['results']),2)
+    def test_same_failure_stops_after_four_attempts_across_replanning(self):
+        (self.project/'test_values.py').write_text('from values import double\nassert double(4)==8, "positive value"\n')
+        self.config['tests'].insert(0,{'argv':[sys.executable,'-B','test_values.py']})
+        plan=workflow();plan['modules'][0]['tests']=[0];plan['modules'][1]['tests']=[1]
+        repair=copy.deepcopy(plan);repair['modules']=repair['modules'][:1];repair['modules'][0]['id']='another-name'
+        def write(n):return {'edits':[{'path':'values.py','op':'write','content':f'def double(n): return n*{n}\n'}]}
+        replies=iter([plan,create('values.py','def double(n): return n*3\n'),write(4),write(5),repair,write(6)])
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)) as chat:
+            r=self.make_run(limits={'repairs':2}).execute()['receipt']
+        self.assertEqual(r['status'],'stalled');self.assertEqual(chat.call_count,6)
+        self.assertEqual(r['blocker_report']['attempts'],4)
+        self.assertEqual(r['blocker_report']['analysis_method'],'programmatic')
+        self.assertIn('test_values.py',r['blocker_report']['location'])
+        self.assertTrue(r['rollback_verified']);self.assertFalse((self.project/'values.py').exists())
+        self.assertFalse((self.project/'app.py').exists())
     def test_invalid_plan_repaired_before_any_project_write(self):
         bad=workflow();bad['modules'][0]['files']=['../escape.py']
         replies=iter([bad,workflow(),create('values.py','def double(n): return n*2\n'),OK,
@@ -170,6 +226,7 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(result['status'],'no_tests');self.assertNotEqual(result['returncode'],0)
     def test_invalid_advisory_diagnosis_does_not_prevent_test_driven_repair(self):
         self.config['repair_diagnosis']=True
+        (self.project/'test_app.py').write_text('import sys\nfrom app import show\nif show(4)!="8":\n print("Formatter produced the wrong value")\n sys.exit(1)\n')
         plan=workflow();plan['modules']=[{'id':'app','contract':'app.py exports show(n) returning str(n*2).',
             'outcomes':['Calling show(4) returns the string "8".'],
             'files':['app.py'],'references':['test_app.py'],'depends_on':[],'tests':[0]}]
@@ -181,7 +238,7 @@ class DirectorTests(unittest.TestCase):
             return next(replies)
         with patch.object(CodeStudioCore,'chat',side_effect=chat):r=self.make_run().execute()['receipt']
         self.assertEqual(r['status'],'succeeded');self.assertEqual(len(r['diagnosis_errors']),1)
-        self.assertIn('AssertionError',prompts[-1]);self.assertNotIn('too long',prompts[-1])
+        self.assertIn('Formatter produced the wrong value',prompts[-1]);self.assertNotIn('too long',prompts[-1])
     def test_repair_output_schema_matches_runtime_bounds(self):
         run=self.make_run();run.core.module_mode=True
         schema=run.core.output_schema('planner')
@@ -256,6 +313,7 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(r['status'],'cancelled');self.assertNotIn('planning_failures',r)
     def test_diagnosis_cannot_target_tests_and_is_never_promoted_to_fact(self):
         self.config['repair_diagnosis']=True
+        (self.project/'test_app.py').write_text('import sys\nfrom app import show\nif show(4)!="8":\n print("Formatter produced the wrong value")\n sys.exit(1)\n')
         for affected in (['test_app.py'],['app.py']):
             plan=workflow();plan['modules']=[{'id':'app','contract':'app.py exports show(n) returning str(n*2).',
                 'outcomes':['Calling show(4) returns the string "8".'],
@@ -271,7 +329,7 @@ class DirectorTests(unittest.TestCase):
             with self.subTest(affected=affected),patch.object(CodeStudioCore,'chat',side_effect=chat):
                 r=self.make_run().execute()['receipt']
             self.assertEqual(r['status'],'succeeded')
-            self.assertIn('AssertionError',prompts[-1])
+            self.assertIn('Formatter produced the wrong value',prompts[-1])
             self.assertNotIn('ROOT CAUSE AND REPAIR PLAN',prompts[-1])
             if affected==['test_app.py']:
                 self.assertNotIn(advice,prompts[-1]);self.assertEqual(len(r['diagnosis_errors']),1)
@@ -302,7 +360,8 @@ class DirectorTests(unittest.TestCase):
         noop={'edits':[{'path':'app.py','op':'write','content':'from values import double\ndef show(n): return str(double(n))\n'}]}
         replies=iter([initial,create('values.py','def double(n): return n*3\n'),OK,
             create('app.py','from values import double\ndef show(n): return str(double(n))\n'),noop,repair,
-            {'edits':[{'path':'values.py','op':'write','content':'def double(n): return n*2\n'}]},OK,OK])
+            {'edits':[{'path':'values.py','op':'write','content':'def double(n): return n*2\n'}]},OK,
+            {'edits':[],'notes':'original app contract now satisfied'},OK,OK])
         calls=[];run=self.make_run(limits={'repairs':1});run.core.config['max_review_rounds']=0
         def chat(role,prompt,model):calls.append((role,prompt));return next(replies)
         with patch.object(CodeStudioCore,'chat',side_effect=chat):r=run.execute()['receipt']

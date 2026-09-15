@@ -67,7 +67,7 @@ def description(value, path):
     ensure_source_text(text)
     return text
 
-def validate_director(value, test_count, max_steps, protected, existing):
+def validate_director(value, test_count, max_steps, protected, existing, *, final_tests=True):
     if not isinstance(value, dict): raise ValueError('Arbeitsplan muss ein Objekt sein.')
     for key, low, high in [('acceptance', 1, 16), ('assumptions', 0, 8), ('questions', 0, 4)]:
         rows = value.get(key)
@@ -108,5 +108,6 @@ def validate_director(value, test_count, max_steps, protected, existing):
         earlier[module['id']] = module['files']
         available.update(module['files'])
     # A planner cannot silently omit any caller-selected final gate.
-    flow['modules'][-1]['tests'] = list(range(test_count))
+    if final_tests:
+        flow['modules'][-1]['tests'] = list(range(test_count))
     return flow

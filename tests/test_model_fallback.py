@@ -61,7 +61,8 @@ class ModelFallbackTests(unittest.TestCase):
                         'content':f'def show(n): return str(n*{len(models)+2})\n'}]}
                 with patch.object(CodeStudioCore,'installed_models',return_value=['backup']),patch.object(CodeStudioCore,'chat',side_effect=chat):
                     r=self.make_run(workflow=workflow,limits=limits).execute()['receipt']
-                self.assertEqual(r['status'],'budget_exhausted')
+                self.assertEqual(r['status'],'stalled' if limits['repairs']==3 else 'budget_exhausted')
+                if limits['repairs']==3:self.assertEqual(r['blocker_report']['attempts'],4)
                 self.assertLessEqual(len(models),limits['repairs']+1)
                 self.assertFalse((self.project/'app.py').exists())
                 if limits['repairs']==1:self.assertNotIn('model_switches',r)
