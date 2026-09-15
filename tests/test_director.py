@@ -52,6 +52,38 @@ class DirectorTests(unittest.TestCase):
         run=self.make_run()
         with patch.object(CodeStudioCore,'chat',side_effect=chat):r=run.execute()['receipt']
         self.assertEqual(r['status'],'succeeded');self.assertIn('VALIDATION ERROR',prompts[1])
+    def test_truncated_director_answer_is_repaired_with_original_budget(self):
+        from core import ModelOutputError
+        replies=iter([ModelOutputError('output length',{'eval_count':4096}),workflow(),
+            create('values.py','def double(n): return n*2\n'),OK,
+            create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        def chat(*args):
+            value=next(replies)
+            if isinstance(value,Exception):raise value
+            return value
+        with patch.object(CodeStudioCore,'chat',side_effect=chat):r=self.make_run(limits={'repairs':1}).execute()['receipt']
+        self.assertEqual(r['status'],'succeeded');self.assertEqual(r['model_output_failures'][0]['eval_count'],4096)
+        self.assertEqual(len(r['planning_failures']),1)
+    def test_correct_existing_module_is_tested_without_artificial_write(self):
+        (self.project/'values.py').write_text('def double(n): return n*2\n')
+        replies=iter([workflow(),{'edits':[],'notes':'already correct'},OK,
+            create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)):r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'succeeded');self.assertEqual(r['attempts'][0]['files'],[])
+        self.assertEqual(r['test']['returncode'],0)
+    def test_transport_validation_error_is_not_retried_as_a_plan(self):
+        with patch.object(CodeStudioCore,'chat',side_effect=ValueError('host binding expired')) as chat:
+            r=self.make_run().execute()['receipt']
+        self.assertEqual(chat.call_count,1);self.assertNotIn('planning_failures',r)
+        self.assertNotEqual(r['status'],'succeeded')
+    def test_many_protected_tests_do_not_force_all_into_planning_context(self):
+        for i in range(30):(self.project/('test_unrelated_'+str(i)+'.py')).write_text('assert True\n')
+        replies=iter([workflow(),create('values.py','def double(n): return n*2\n'),OK,
+            create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)):r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'succeeded');self.assertTrue(r['planning_context_omitted'])
+        self.assertLessEqual(len(r['planning_context']),24)
+        self.assertGreater(len(r['protected_tests']),24)
     def test_protected_future_and_invented_profiles_rejected(self):
         for key,value in [('files',['test_app.py']),('references',['app.py']),('tests',[99]),('models',{'coder':'invented'})]:
             plan=workflow();plan['modules'][0][key]=value

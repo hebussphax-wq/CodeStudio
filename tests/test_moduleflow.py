@@ -101,7 +101,7 @@ class ModuleTests(unittest.TestCase):
   self.assertEqual(result['status'],'succeeded')
   self.assertIn('DATEI calc.py\na=0\nb=0',prompts[0])
   self.assertIn('DATEI test_a.py\nfrom calc import a',prompts[0])
-  self.assertEqual(prompts[0].count('a=2'),1)
+  self.assertIn('ORIGINAL USER TASK',prompts[0]);self.assertIn('GENERATED MODULE PLAN',prompts[0]);self.assertEqual(prompts[0].count('GENERATED MODULE PLAN'),1)
 
  def test_noop_after_review_keeps_specific_diagnosis(self):
   run=self.run_new(2);run.core.config['max_review_rounds']=0;prompts=[]

@@ -117,6 +117,14 @@
       {
         "command": "codestudio.fallbackModels",
         "title": "CodeStudio: Lokale Ersatzmodelle wählen"
+      },
+      {
+        "command": "codestudio.testProfiles",
+        "title": "CodeStudio: Testprofile laden"
+      },
+      {
+        "command": "codestudio.limits",
+        "title": "CodeStudio: Laufgrenzen einstellen"
       }
     ],
     "configuration": {
@@ -196,6 +204,51 @@
           "default": [],
           "scope": "resource",
           "description": "Geordnete vorhandene Ersatzmodelle desselben lokalen Ollama-Dienstes. Nach zwei fehlgeschlagenen Modultests wechseln; ursprüngliche Zeit-, Aufruf- und Reparaturgrenzen bleiben bestehen. Hostmodelle werden nicht umgangen."
+        },
+        "codestudio.testProfiles": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "description": "Benannte Testprofile. Haben Vorrang vor testCommand; alle laufen in der Schlussprüfung.",
+          "items": {
+            "type": "object",
+            "required": [
+              "argv"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "argv": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "timeout_sec": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            }
+          }
+        },
+        "codestudio.outputTokens": {
+          "type": "integer",
+          "default": 4096,
+          "minimum": 256,
+          "maximum": 32768,
+          "scope": "resource",
+          "description": "Maximale Ausgabetokens je lokalem Modellaufruf. Eingabe und Ausgabe benötigen gemeinsam ausreichend Kontext."
+        },
+        "codestudio.autonomousModelCalls": {
+          "type": "integer",
+          "default": 80,
+          "minimum": 4,
+          "maximum": 200,
+          "scope": "resource",
+          "description": "Gesamtbudget der Modellaufrufe einschließlich Reparaturen und Ersatzmodellen."
         }
       }
     }

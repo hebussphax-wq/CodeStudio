@@ -20,6 +20,12 @@ from safety import (safe_path, WorkspaceTransaction, identity, digest, canonical
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+class ModelOutputError(ValueError, RuntimeError):
+    """Invalid/truncated model data, distinct from transport or cancellation."""
+    def __init__(self, message, evidence):
+        self.evidence = evidence
+        super().__init__(message)
+
 SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
     "dist", "build", "target", ".next", ".nuxt", ".pytest_cache", ".mypy_cache",
@@ -179,7 +185,7 @@ class CodeStudioCore:
             schema['additionalProperties'] = False
             return schema
         if role == 'coder' and getattr(self,'module_mode',False):
-            return {'type':'object','properties':{'edits':{'type':'array','minItems':1,'maxItems':4,
+            return {'type':'object','properties':{'edits':{'type':'array','minItems':0,'maxItems':4,
                 'items':{'type':'object','properties':{'path':{'type':'string'},'op':{'type':'string','enum':['create','write','delete']},'content':{'type':'string'}},'required':['path','op','content'],'additionalProperties':False}},'notes':{'type':'string','maxLength':300}},'required':['edits','notes'],'additionalProperties':False}
         if role == 'reviewer' and getattr(self,'module_mode',False):
             return {'type':'object','properties':{'observations':{'type':'string','maxLength':1600},'defects':SCHEMA['reviewer']['properties']['issues'],'verdict':SCHEMA['reviewer']['properties']['verdict'],'summary':SCHEMA['reviewer']['properties']['summary']},'required':['observations','defects','verdict','summary'],'additionalProperties':False}
@@ -198,12 +204,13 @@ class CodeStudioCore:
         return obj
 
     def chat(self, role: str, user: str, model: str) -> dict:
-        effective_system = "Implement ONLY the bounded module contract. Return JSON edits with exactly path, op (create/write/delete), content (complete source). No old_text or new_text, no duplicate code, no shell commands. Keep implementation concise and complete." if role == 'coder' and getattr(self,'module_mode',False) else SYSTEM[role]
+        effective_system = "Implement ONLY the bounded module contract. Return JSON edits with exactly path, op (create/write/delete), content (complete source). No old_text or new_text, no duplicate code, no shell commands. Keep implementation concise and complete. If the existing module already meets the contract return edits: []; real tests and QC still run." if role == 'coder' and getattr(self,'module_mode',False) else SYSTEM[role]
         if role == 'planner' and getattr(self,'module_mode',False): effective_system = 'Diagnose the concrete test failure from the source. Return JSON with plan (at most 3 precise repair steps naming the faulty expression), files (affected module files), questions (empty unless essential information is absent), acceptance (test that must pass). Analyze the root cause, do not restate the feature request. Never change tests.'
         if role == 'planner' and getattr(self, 'director_mode', False):
             from director import DIRECTOR_SYSTEM
             effective_system = DIRECTOR_SYSTEM
         if role == 'reviewer' and getattr(self,'module_mode',False): effective_system = "You are a software reviewer. First compute what the source actually does, including functions called by factories. Then compare this behavior with the explicit contract. Return JSON in this order: observations (short factual explanation), defects (only demonstrated contract violations, empty array when none), verdict (ok or reject), summary. A passing test alone does not prove correctness. Never invent a missing value when the code computes it. Approve when the contract is fulfilled. The defects array contains only broken behavior; passing checks belong in observations, never defects."
+        effective_system += '\nOUTPUT JSON SCHEMA (field meanings and required shape):\n' + json.dumps(self.output_schema(role), ensure_ascii=False, separators=(',', ':'))
         if self.transport is not None:
             result = self.transport('chat', {'role': role, 'model': model, 'system': effective_system,
                 'messages': [{'role': 'user', 'content': user}], 'schema': self.output_schema(role)})
@@ -228,9 +235,14 @@ class CodeStudioCore:
             response = self.ollama_request("/api/chat", body)
             metrics = {k:response[k] for k in ('done_reason','total_duration','load_duration','prompt_eval_count','eval_count','eval_duration') if k in response}
             self.log('Modellmessung: '+json.dumps({'role':role,'model':model,**metrics}))
-            if response.get('done_reason') == 'length':
-                raise RuntimeError('Modellausgabe abgeschnitten: Modul verkleinern oder Ausgabelimit prüfen.')
             raw = response.get("message", {}).get("content", "")
+            if response.get('done_reason') == 'length':
+                evidence = {'role':role, 'model':model, **metrics,
+                    'options':dict(body['options']), 'schema_sha256':digest(canonical(self.output_schema(role))),
+                    'response_sha256':digest(raw.encode('utf8')), 'response_bytes':len(raw.encode('utf8')),
+                    'response_preview':redact(raw)[:4000], 'preview_truncated':len(raw)>4000}
+                recovery = ('Kompakten Arbeitsplan ohne Implementierungscode erstellen.' if getattr(self,'director_mode',False) else 'Vollständige kompakte Quelldateien liefern; nur das aktuelle Modul implementieren.' if role=='coder' else 'Prüfung auf konkrete Defekte und kurze Beobachtungen begrenzen.' if role=='reviewer' else 'Höchstens drei kurze konkrete Reparaturschritte liefern.')
+                raise ModelOutputError('Modellausgabe am Ausgabelimit abgeschnitten. '+recovery, evidence)
             try:
                 obj = json.loads(raw)
                 if isinstance(obj, dict):
@@ -240,7 +252,9 @@ class CodeStudioCore:
             if attempt == 1:
                 body["messages"].append({"role": "assistant", "content": raw})
                 body["messages"].append({"role": "user", "content": "Nur gültiges JSON-Objekt ausgeben."})
-        raise RuntimeError(f"{role} lieferte kein gültiges JSON")
+        raise ModelOutputError(f"{role} lieferte kein gültiges JSON", {'role':role,'model':model,
+            'response_sha256':digest(raw.encode('utf8')), 'response_bytes':len(raw.encode('utf8')),
+            'response_preview':redact(raw)[:4000], 'preview_truncated':len(raw)>4000})
 
     def file_tree(self) -> list[str]:
         out = []
@@ -471,7 +485,7 @@ class CodeStudioCore:
             old = self.current_text(rel) if safe_path(self.workspace, rel).is_file() else None
             if new != old:
                 final[rel] = new
-        if not issues and not final:
+        if not issues and not final and not getattr(self, 'allow_unchanged_module', False):
             issues.append("Keine effektive Änderung")
         return final, issues
 
@@ -576,7 +590,7 @@ class CodeStudioCore:
             if feedback:
                 prompt += "\n\nBEANSTANDUNGEN:\n" + feedback
             code = self.chat("coder", prompt, model)
-            candidate = self.normalize_edits(code.get("edits", []))
+            candidate = self.normalize_edits(code.get("edits"))
             for edit in candidate:
                 if edit["path"] not in self.read_identity:
                     # Unread new files may be created; existing files require task context.

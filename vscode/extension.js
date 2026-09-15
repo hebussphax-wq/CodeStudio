@@ -35,14 +35,18 @@ function activate(context){
  let engine=null,folder=null,proposal=null,busy=false,activeRun=null,status='Projekt öffnen und Aufgabe beschreiben';
  const boundWorkspaces=new Map();
  const config=()=>vscode.workspace.getConfiguration('codestudio',folder?.uri);
- const configureRequest=()=>({context_tokens:config().get('contextTokens'),test_argv:config().get('testCommand',[]),...(!config().get('hostBinding')?{ollama_url:config().get('ollamaUrl','http://127.0.0.1:11434'),fallback_models:config().get('fallbackModels',[])}:{})});
- const settingsIdentity=()=>JSON.stringify({endpoint:config().get('ollamaUrl'),model:config().get('model'),fallbacks:config().get('fallbackModels',[]),context:config().get('contextTokens'),tests:config().get('testCommand',[]),hostBinding:config().get('hostBinding',''),steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),minutes:config().get('autonomousMinutes',30)});
+ const testProfiles=()=>config().get('testProfiles',[]);
+ const hasTests=()=>testProfiles().length>0||config().get('testCommand',[]).length>0;
+ const configureRequest=()=>({context_tokens:config().get('contextTokens'),...(testProfiles().length?{test_profiles:testProfiles()}:{test_argv:config().get('testCommand',[])}),...(!config().get('hostBinding')?{output_tokens:config().get('outputTokens',4096),ollama_url:config().get('ollamaUrl','http://127.0.0.1:11434'),fallback_models:config().get('fallbackModels',[])}:{})});
+ const settingsIdentity=()=>JSON.stringify({endpoint:config().get('ollamaUrl'),model:config().get('model'),fallbacks:config().get('fallbackModels',[]),context:config().get('contextTokens'),output:config().get('outputTokens',4096),profiles:testProfiles(),calls:config().get('autonomousModelCalls',80),tests:config().get('testCommand',[]),hostBinding:config().get('hostBinding',''),steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),minutes:config().get('autonomousMinutes',30)});
  const item=(label,command,arg,icon)=>{const i=new vscode.TreeItem(label);if(command)i.command={command,title:label,arguments:arg===undefined?[]:[arg]};if(icon)i.iconPath=new vscode.ThemeIcon(icon);return i;};
  const provider={onDidChangeTreeData:changed.event,getTreeItem:x=>x,getChildren:()=>[
   item(status,null,null,busy?'sync~spin':'info'),
   item(config().get('hostBinding')?'Modellsteuerung: TobyKi-Hostsitzung':'Modellsteuerung: eigenständiges Ollama',null,null,'plug'),
   item('Autonom entwickeln','codestudio.autonomous',undefined,'rocket'),
    item('Ersatzmodelle: '+config().get('fallbackModels',[]).length,'codestudio.fallbackModels',undefined,'server'),
+  item('Testprofile laden','codestudio.testProfiles',undefined,'beaker'),
+  item('Laufgrenzen einstellen','codestudio.limits',undefined,'settings'),
   item('Modul-Workflow laden','codestudio.workflow',undefined,'list-tree'),
   ...(!config().get('hostBinding')?[item('Grafik lokal mit ComfyUI erzeugen','codestudio.graphics',undefined,'file-media')]:[]),
   ...(activeRun?[item('Autonomen Auftrag stoppen','codestudio.stop',undefined,'debug-stop')]:[]),
@@ -54,7 +58,7 @@ function activate(context){
   ...(!config().get('hostBinding')?[item('Ollama: '+config().get('ollamaUrl','http://127.0.0.1:11434'),'codestudio.provider',undefined,'plug')]:[]),
   item('Modell: '+config().get('model'),'codestudio.model',undefined,'server'),
   item('Kontext: '+config().get('contextTokens')+' Tokens','codestudio.context',undefined,'settings'),
-  item(config().get('testCommand',[]).length?'Projekttests eingestellt':'Projekttests einstellen','codestudio.tests',undefined,'beaker'),
+  item(hasTests()?'Projekttests eingestellt':'Projekttests einstellen','codestudio.tests',undefined,'beaker'),
   ...(proposal?[...proposal.changes.map(c=>item(c.path,'codestudio.openDiff',c.path,'diff')),item('Geprüften Diff anwenden','codestudio.apply',undefined,'check'),item('Vorschlag verwerfen','codestudio.reject',undefined,'close')]:[]),
   item('Autonome Aufträge und QC-Belege','codestudio.history',undefined,'history'),
   item('Ablauf und Belege','codestudio.output',undefined,'output')
@@ -86,7 +90,7 @@ function activate(context){
   'codestudio.inspect':()=>guard(async()=>{if(!await ensure())return;const snapshot=editorContext.collect(vscode,folder);const uri=vscode.Uri.parse('codestudio-diff:/editor-context/'+Date.now()+'.json');documents.set(uri.toString(),JSON.stringify(snapshot,null,2));await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));return snapshot;}),
   'codestudio.problems':()=>vscode.commands.executeCommand('workbench.actions.view.problems'),
   'codestudio.projectFile':()=>guard(async()=>{if(!await ensure())return;const files=await vscode.workspace.findFiles(new vscode.RelativePattern(folder,'**/*'), '**/{.git,node_modules,.venv,dist,build,target}/**',300);const items=files.map(uri=>({label:editorContext.relativeFile(folder,uri),uri})).filter(x=>x.label);const selected=await vscode.window.showQuickPick(items,{placeHolder:'Datei im gewählten CodeStudio-Projekt öffnen'});if(selected)await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(selected.uri));}),
-  'codestudio.runTests':()=>guard(async()=>{const client=await ensure();if(!client)return;if(dirty())throw Error('Offene Änderungen zuerst speichern.');if(!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen.');busy=true;changed.fire();try{await client.request('configure',configureRequest());const result=await client.request('test');output.appendLine(result.output||'');output.show(true);status=result.returncode===0?'Projekttests bestanden':'Projekttests fehlgeschlagen';return result;}finally{busy=false;changed.fire();}}),
+  'codestudio.runTests':()=>guard(async()=>{const client=await ensure();if(!client)return;if(dirty())throw Error('Offene Änderungen zuerst speichern.');if(!hasTests())throw Error('Zuerst Projekttests einstellen.');busy=true;changed.fire();try{await client.request('configure',configureRequest());const result=await client.request('test');output.appendLine(result.output||'');output.show(true);status=result.returncode===0?'Projekttests bestanden':'Projekttests fehlgeschlagen';return result;}finally{busy=false;changed.fire();}}),
   'codestudio.history':()=>guard(async()=>{const client=await ensure();if(!client)return;const result=await client.request('history');const chosen=await vscode.window.showQuickPick(result.runs.map(r=>({label:r.status+' · '+r.task,description:r.run_id,receipt:r.receipt_path})),{placeHolder:'Autonomen Auftrag und QC-Beleg öffnen'});if(chosen)await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(chosen.receipt)));}),
   'codestudio.output':()=>output.show(),
   'codestudio.openDiff':showDiff,
@@ -94,7 +98,22 @@ function activate(context){
   'codestudio.model':()=>guard(async()=>{const client=await ensure();if(!client)return;await client.request('configure',configureRequest());const r=await client.request('models');const model=await vscode.window.showQuickPick(r.models,{placeHolder:'Installiertes Ollama-Modell'});await update('model',model);}),
   'codestudio.fallbackModels':()=>guard(async()=>{const client=await ensure();if(!client)return;if(config().get('hostBinding'))throw Error('Ersatzmodelle werden durch den Host verwaltet.');await client.request('configure',configureRequest());const r=await client.request('models');const selected=await vscode.window.showQuickPick(r.models.filter(m=>m!==config().get('model')).map(m=>({label:m,picked:config().get('fallbackModels',[]).includes(m)})),{canPickMany:true,placeHolder:'Bis zu 3 lokale Ersatzmodelle; Reihenfolge wie angezeigt. Wechsel nach zwei fehlgeschlagenen Tests.'});if(selected===undefined)return;if(selected.length>3)throw Error('Höchstens drei Ersatzmodelle wählen.');await update('fallbackModels',selected.map(m=>m.label));}),
   'codestudio.context':()=>guard(async()=>{if(!await ensure())return;if(config().get('hostBinding')){vscode.window.showInformationMessage('Kontext und Ressourcen werden durch die gebundene TobyKi-Hostkonfiguration bestimmt. Nach Änderungen erneut aus TobyKi öffnen.');return;}const value=await vscode.window.showQuickPick(['8192','16384','32768','65536','131072'],{placeHolder:'Kontextfenster – größere Werte benötigen mehr Speicher'});if(value)await update('contextTokens',Number(value));}),
-  'codestudio.tests':()=>guard(async()=>{if(!await ensure())return;const value=await vscode.window.showInputBox({prompt:'Testprogramm und Argumente als JSON-Liste; [] bedeutet ungeprüft',value:JSON.stringify(config().get('testCommand',[])),ignoreFocusOut:true});if(value===undefined)return;const args=JSON.parse(value);if(!Array.isArray(args)||!args.every(x=>typeof x==='string'&&x))throw Error('Argumentliste erforderlich.');await update('testCommand',args);}),
+  'codestudio.testProfiles':()=>guard(async()=>{
+   const client=await ensure();if(!client)return;
+   const picked=await vscode.window.showOpenDialog({canSelectMany:false,filters:{'Testprofile':['json']},openLabel:'Testprofile wählen'});if(!picked?.length)return;
+   if(picked[0].scheme!=='file')throw Error('Lokale JSON-Datei erforderlich.');
+   const raw=fs.readFileSync(picked[0].fsPath,'utf8');if(Buffer.byteLength(raw)>120000)throw Error('Testprofil-Datei zu groß.');
+   const data=JSON.parse(raw),profiles=Array.isArray(data)?data:data.test_profiles;
+   if(!Array.isArray(profiles)||!profiles.length)throw Error('Nichtleere Liste test_profiles erforderlich.');
+   await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(picked[0]));
+   await client.request('configure',{...configureRequest(),test_profiles:profiles});
+   await update('testProfiles',profiles);status=profiles.length+' Testprofile eingestellt';changed.fire();
+  }),
+  'codestudio.limits':()=>guard(async()=>{
+   if(!await ensure())return;
+   await vscode.commands.executeCommand('workbench.action.openSettings','@ext:tobyki.codestudio');
+  }),
+  'codestudio.tests':()=>guard(async()=>{if(!await ensure())return;const value=await vscode.window.showInputBox({prompt:'Testprogramm und Argumente als JSON-Liste; [] bedeutet ungeprüft',value:JSON.stringify(config().get('testCommand',[])),ignoreFocusOut:true});if(value===undefined)return;const args=JSON.parse(value);if(!Array.isArray(args)||!args.every(x=>typeof x==='string'&&x))throw Error('Argumentliste erforderlich.');await update('testCommand',args);await update('testProfiles',[]);}),
   'codestudio.generate':options=>guard(async()=>{
    const client=await ensure();if(!client)return;
    if(dirty())throw Error('Offene Änderungen zuerst speichern, damit CodeStudio dieselben Dateien prüft wie der Editor.');
@@ -150,11 +169,11 @@ function activate(context){
   'codestudio.autonomous':options=>guard(async()=>{
    const client=await ensure();if(!client)return;
    if(dirty())throw Error('Offene Änderungen zuerst speichern.');
-   if(!options?.test_profiles&&!config().get('testCommand',[]).length)throw Error('Zuerst Projekttests einstellen. Autonomer Abschluss benötigt echte Tests.');
+   if(!options?.test_profiles&&!hasTests())throw Error('Zuerst Projekttests einstellen. Autonomer Abschluss benötigt echte Tests.');
    const task=options?.task||await vscode.window.showInputBox({prompt:'Autonom entwickeln: Ziel und überprüfbare Akzeptanzkriterien',ignoreFocusOut:true});if(!task)return;
    const settings=settingsIdentity(),workspace=folder.uri.toString();
-   const limits={steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),seconds:config().get('autonomousMinutes',30)*60,model_calls:80};
-   const approval=await vscode.window.showWarningMessage('CodeStudio bearbeitet '+folder.uri.fsPath+' autonom: planen, Dateien ändern, Projekttests ausführen und Fehler reparieren. Bis '+limits.steps+' Schritte, '+limits.repairs+' Reparaturen, '+(limits.seconds/60)+' Minuten. Bei Abbruch/Fehlschlag werden die eigenen Änderungen zurückgerollt. Vorhandene Tests bleiben erhalten.',{modal:true},'Autonom entwickeln');
+   const limits={steps:config().get('autonomousSteps',6),repairs:config().get('autonomousRepairs',3),seconds:config().get('autonomousMinutes',30)*60,model_calls:config().get('autonomousModelCalls',80)};
+   const approval=await vscode.window.showWarningMessage('CodeStudio bearbeitet '+folder.uri.fsPath+' autonom: planen, Dateien ändern, Projekttests ausführen und Fehler reparieren. Bis '+limits.steps+' Schritte, '+limits.repairs+' Reparaturen, '+(limits.seconds/60)+' Minuten und '+limits.model_calls+' Modellaufrufe. Bei Abbruch/Fehlschlag werden die eigenen Änderungen zurückgerollt. Vorhandene Tests bleiben erhalten.',{modal:true},'Autonom entwickeln');
    if(approval!=='Autonom entwickeln')return;
    if(dirty()||settings!==settingsIdentity()||!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===workspace))throw Error('Projekt oder Einstellungen geändert. Auftrag neu starten.');
    busy=true;proposal=null;activeRun=crypto.randomBytes(16).toString('hex');status='Autonom: planen und abarbeiten';changed.fire();output.show(true);
@@ -176,7 +195,7 @@ function activate(context){
    const assertCurrent=()=>{if(!vscode.workspace.isTrusted||!vscode.workspace.workspaceFolders?.some(f=>f.uri.toString()===folder.uri.toString())||proposal.settings!==settingsIdentity())throw Error('Projekt oder Einstellungen geändert. Bitte neu analysieren.');if(dirty())throw Error('Ungespeicherte Editoränderungen: zuerst speichern und neu analysieren.');};
    assertCurrent();
    if(dirty())throw Error('Ungespeicherte Editoränderungen: zuerst speichern und neu analysieren.');
-   const noTests=!config().get('testCommand',[]).length;
+   const noTests=!hasTests();
    const approval=await vscode.window.showWarningMessage(proposal.changes.length+' Datei(en) in '+proposal.workspace+' ändern?'+(noTests?' Keine Projekttests eingestellt.':' Anschließend laufen die eingestellten Projekttests.'),{modal:true},'Geprüften Diff anwenden');
    if(approval!=='Geprüften Diff anwenden')return;
    assertCurrent();

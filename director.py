@@ -30,7 +30,10 @@ DIRECTOR_SYSTEM = """You lead a local software development team. Turn the origin
 read-only project contracts into a SMALL dependency-ordered implementation workflow. Return the
 requested JSON only. Make reasonable reversible choices for unspecified details and record assumptions.
 Ask questions only when an essential requirement cannot be inferred. Preserve every explicit user
-requirement. For each module specify complete behavior, exact exported API/data shapes, integration
+requirement. This is a PLAN, not an implementation: never put source code, function bodies, entire
+arrays or HTML/CSS in contract/outcomes. Use 1–3 concise natural-language sentences per contract.
+Name exported APIs and their behavior; let the coder implement them from the original tests.
+For each module specify complete behavior, exact exported API/data shapes, integration
 with earlier modules, and observable acceptance in outcomes. contract describes WHAT TO IMPLEMENT;
 'read-only' describes reference permissions and is NEVER an implementation contract. Acceptance
 must state verifiable behavior, not merely names of test profiles or module categories.
@@ -52,10 +55,14 @@ class PlanValidationError(ValueError):
 def description(value, path):
     # This is a structural quality gate, not a claim that model prose is correct.
     # Actual tests and source review remain mandatory.
-    if not isinstance(value, str) or not 12 <= len(value.strip()) <= 2000 or len(value.split()) < 3:
-        raise PlanValidationError(path, 'Konkretes Verhalten oder beobachtbares Ergebnis mit mindestens 3 Wörtern und 12–2000 Zeichen erforderlich; keine Modusbezeichnung oder Kategorie.')
-    ensure_source_text(value)
-    return value.strip()
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 2000:
+        raise PlanValidationError(path, 'Nichtleere Verhaltensbeschreibung mit höchstens 2000 Zeichen erforderlich.')
+    text = value.strip()
+    import re
+    if text.casefold() in ('read-only', 'readonly', 'todo', 'tbd', 'app', 'values', 'module', 'code') or re.fullmatch(r'[\w./-]+', text):
+        raise PlanValidationError(path, 'Verhalten beschreiben, nicht nur Modus, Dateiname oder Kategorie.')
+    ensure_source_text(text)
+    return text
 
 def validate_director(value, test_count, max_steps, protected, existing):
     if not isinstance(value, dict): raise ValueError('Arbeitsplan muss ein Objekt sein.')

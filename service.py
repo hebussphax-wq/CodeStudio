@@ -100,6 +100,11 @@ class StudioService:
         if command == 'configure':
             context = request.get('context_tokens',16384)
             tests = request.get('test_argv',[])
+            output = request.get('output_tokens',self.core.config.get('options',{}).get('num_predict',4096))
+            if type(output) is not int or not 256 <= output <= 32768:
+                raise ValueError('Ausgabelimit muss zwischen 256 und 32768 Tokens liegen.')
+            if self.transport and 'output_tokens' in request:
+                raise ValueError('Ausgabelimit wird durch die Hostbindung bestimmt.')
             endpoint = None
             fallbacks = fallback_models(request.get('fallback_models',[]))
             if self.transport and fallbacks:
@@ -117,12 +122,14 @@ class StudioService:
                 bound=self.transport('models',{})
                 context=bound['options']['num_ctx']
             self.core.config.setdefault('options',{})['num_ctx'] = context
+            if not self.transport: self.core.config['options']['num_predict'] = output
             self.core.config['tests'] = profiles
             self.core.config['autonomous_fallback_models'] = fallbacks
             if endpoint is not None:
                 self.core.config['ollama_url'] = endpoint
             self.proposals.clear(); self.core.pending.clear()
-            return {'context_tokens':context,'tests_configured':bool(profiles),
+            return {'context_tokens':context,'output_tokens':None if self.transport else output,'tests_configured':bool(profiles),
+                    'test_profiles':profiles,
                     'ollama_url':None if self.transport else self.core.config.get('ollama_url'),
                     'fallback_models':fallbacks}
         if command == 'analyze':

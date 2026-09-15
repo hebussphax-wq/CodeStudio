@@ -22,9 +22,17 @@ VS Code mit der Quellerweiterung; alternativ `start.cmd` öffnen.
 
 1. Lokalen Projektordner in VS Code öffnen und die CodeStudio-Seitenleiste wählen.
 2. Unter „Modell“ ein installiertes Ollama-Modell und unter „Kontext“ die passende Größe auswählen.
-3. Unter „Projekttests einstellen“ die Argumentliste des eigenen Testprogramms festlegen,
-   z. B. `["python", "-m", "unittest", "discover", "-v"]`.
-4. „Aufgabe planen und Diff erzeugen“ wählen und Aufgabe mit Akzeptanzkriterien eingeben.
+3. Unter „Projekttests einstellen“ eine ausführbare Argumentliste festlegen oder unter
+   „Testprofile laden“ eine JSON-Datei mit mehreren benannten Profilen öffnen.
+   Jedes Profil enthält `name`, `argv` und `timeout_sec`; alle laufen in der Schlussprüfung.
+   Gespeicherte `codestudio.testProfiles` gelten auch für den normalen Testknopf und
+   den freien autonomen Auftrag, ohne vorbereiteten Modul-Workflow.
+   `codestudio.testCommand` bleibt als einzelnes Testprogramm unterstützt.
+4. Für einen autonomen Auftrag „Autonom entwickeln“ wählen. „Laufgrenzen einstellen“
+   öffnet die Einstellungen für Schritte, Reparaturen, Minuten, Modellaufrufe, Kontext
+   und Ausgabetokens. Das Aufrufbudget umfasst auch Reparaturen und Ersatzmodelle.
+   Größere Ausgabegrenzen benötigen gemeinsam mit der Eingabe genügend Kontext.
+   Alternativ „Aufgabe planen und Diff erzeugen“ wählen und Aufgabe mit Akzeptanzkriterien eingeben.
 5. Vorschlag prüfen, dann „Geprüften Diff anwenden“ bestätigen.
 
 Bei fehlgeschlagenen Tests wird bytegenau zurückgerollt. Der Testfehler steht
@@ -101,7 +109,7 @@ wird nicht behauptet.
 
 ## Tests
 
-`python -m unittest discover -v` im CodeStudio-Ordner.
+`python -m unittest discover -s tests -v` im CodeStudio-Ordner.
 TobyKi: `node tests/run_all_tests.js` im TobyKi-Quellverzeichnis.
 Testbelege gelten für ihre jeweilige Quellidentität und Testumgebung.
 

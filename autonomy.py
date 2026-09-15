@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from urllib.parse import urlsplit
-from core import CodeStudioCore, truncate, SCHEMA
+from core import CodeStudioCore, truncate, SCHEMA, ModelOutputError
 from workflow import normalize_job, job_result
 from moduleflow import normalize_workflow
 from processrunner import run_command, ProcessTreeUncertain
@@ -383,23 +383,47 @@ class AutonomousRun:
         self.core.checkpoint(); self.unchanged()
         preferred = [p for p in tree if pathlib.PurePosixPath(p).name.lower() in
                      ('readme.md', 'requirements.md', 'spec.md', 'agents.md')]
-        paths = list(dict.fromkeys(list(self.protected) + preferred +
-                     [hit['path'] for hit in self.core.scout(self.task, tree)]))
+        entries = []
+        for profile in self.all_tests:
+            for arg in profile['argv']:
+                try:
+                    p = pathlib.Path(arg)
+                    rel = p.resolve().relative_to(self.core.workspace).as_posix() if p.is_absolute() else relative(arg)
+                    if rel in tree: entries.append(rel)
+                except (ValueError, OSError): pass
+        candidates = list(dict.fromkeys(preferred + entries +
+                     [hit['path'] for hit in self.core.scout(self.task, tree)] + list(self.protected)))
+        mandatory = preferred[:]
         if repair_feedback:
-            paths = list(dict.fromkeys(sorted(self.authorized_files) +
-                         sorted(self.review_paths) + paths))
+            mandatory = list(dict.fromkeys(preferred + sorted(self.authorized_files)))
+            candidates = list(dict.fromkeys(mandatory + sorted(self.review_paths) + candidates))
+        # Protection covers the entire test suite; model context selects complete relevant files.
+        # Never silently clip a selected file or confuse omitted tests with writable files.
         max_files = min(24, int(self.core.config.get('context_max_files', 40)))
-        if len(paths) > max_files: raise RunStopped('blocked', 'Zu viele Verträge für vollständige Planung; Projekt eingrenzen.')
+        paths = []; total = 0; omitted = []
+        per_file = int(self.core.config.get('context_max_bytes_per_file',20000))
+        for rel in candidates:
+            if safe_path(self.core.workspace,rel,True).exists():
+                text, binary = self.core.read_reference(rel)
+            else:
+                text = '<neu – existiert nicht>'
+            size = len(text.encode('utf8'))
+            fits = len(paths)<max_files and size<=per_file and total+size<=60000
+            if not fits:
+                if rel in mandatory: raise RunStopped('blocked','Vollständiger Pflichtkontext überschreitet das Planbudget: '+rel)
+                omitted.append(rel); continue
+            paths.append(rel); total += size
         context = self.core.read_files(paths, readonly_assets=True)
-        if self.core.truncated or len(context) != len(paths) or sum(len(t.encode('utf8')) for t in context.values()) > 60000:
-            raise RunStopped('blocked', 'Planungskontext unvollständig oder zu groß.')
+        if self.core.truncated or len(context) != len(paths):
+            raise RunStopped('blocked', 'Planungskontext unvollständig.')
+        self.receipt['planning_context_omitted'] = omitted
         self.unchanged()
         self.expected.update(self.core.read_identity)
         self.receipt['planning_context'] = dict(self.core.read_identity)
         prompt = ('ORIGINAL TASK:\n'+self.task+'\nMAXIMUM MODULES: '+str(self.limits['steps'])+
                   '\nAVAILABLE TEST PROFILES (indices are the only permitted test selections):\n'+
                   json.dumps([{'index':i, **p} for i,p in enumerate(self.all_tests)], ensure_ascii=False)+
-                  '\nFILE TREE:\n'+'\n'.join(tree)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
+                  '\nFILE TREE:\n'+'\n'.join(tree)+'\nOMITTED FROM PLANNING CONTEXT (still protected; reference relevant files in module references):\n'+json.dumps(omitted)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
                   '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
         if repair_feedback:
             prompt += ('\nFINAL INTEGRATION DEFECTS:\n'+repair_feedback+
@@ -412,9 +436,10 @@ class AutonomousRun:
             for attempt in range(self.limits['repairs']+1):
                 self.unchanged(); self.core.checkpoint()
                 self.core.log('Autonom: Arbeitsplan aus Auftrag und Projektverträgen erstellen')
-                value = self.core.chat('planner', prompt+feedback, self.model)
-                self.unchanged()
+                value = None
                 try:
+                    value = self.core.chat('planner', prompt+feedback, self.model)
+                    self.unchanged()
                     workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree)
                     # Requirements and selected executable test contracts must reach the coder
                     # even when the director forgets to repeat them in its references field.
@@ -434,6 +459,10 @@ class AutonomousRun:
                     if repair_feedback and not writes.issubset(self.authorized_files):
                         raise ValueError('Gesamtreparatur darf den ursprünglichen Schreibbereich nicht erweitern.')
                 except ValueError as exc:
+                    if value is None and not isinstance(exc, ModelOutputError): raise
+                    self.unchanged(); self.core.checkpoint()
+                    if isinstance(exc, ModelOutputError):
+                        self.receipt.setdefault('model_output_failures', []).append(exc.evidence)
                     self.receipt.setdefault('planning_errors', []).append(redact(str(exc)))
                     raw_plan = canonical(value)
                     redacted_plan = redact(raw_plan.decode('utf8'))
@@ -461,7 +490,7 @@ class AutonomousRun:
                             self.core.log('Autonom: ungültige Planung an lokales Ersatzmodell '+replacement+' übergeben')
                             invalid_plans=0
                             self.save()
-                    feedback = '\nPREVIOUS INVALID PLAN:\n'+truncate(json.dumps(value),16000)+'\nVALIDATION ERROR: '+redact(str(exc))+'\nCorrect this error without changing the original task.'
+                    feedback = '\nPREVIOUS INVALID PLAN:\n'+truncate(json.dumps(value),4000)+'\nVALIDATION ERROR: '+redact(str(exc))+'\nCorrect this error without changing the original task. Return a concise plan, no implementation code or full data arrays.'
                     continue
                 if value['questions']: raise RunStopped('blocked', 'Rückfrage: '+'; '.join(value['questions']))
                 self.workflow = workflow
@@ -500,8 +529,9 @@ class AutonomousRun:
             failed_tests=0
             for attempt in range(self.limits['repairs']+1):
                 test=None
+                self.core.allow_unchanged_module = attempt == 0
                 self.core.log('Modul '+module['id']+' Versuch '+str(attempt+1))
-                task=module['contract']+'\nNur diese Dateien ändern: '+json.dumps(module['files'])
+                task=('ORIGINAL USER TASK (implement only the current module):\n'+self.task+'\nGENERATED MODULE PLAN:\n'+module['contract']+'\nThe original requirements and unchanged test assertions are authoritative. Correct any conflicting implementation suggestion in the generated plan; preserve the bounded file scope.\nNur diese Dateien ändern: '+json.dumps(module['files']))
                 if feedback: task+='\nTESTDIAGNOSE (vor nächstem Modul beheben):\n'+feedback
                 try:
                     result,test=self.proposal(task)
@@ -520,7 +550,7 @@ class AutonomousRun:
                             context[p]=text
                         self.unchanged()
                         source_text='\n\n'.join('DATEI '+p+'\n'+(content if content is not None else '[deleted]') for p,content in context.items())
-                        review_prompt='CONTRACT:\n'+module['contract']+'\nIMPLEMENTATION AND READ-ONLY REFERENCES (test modes for other modules are not requirements for this module):\n'+source_text+'\nEXECUTED TESTS:\n'+test.get('output','')
+                        review_prompt='ORIGINAL TASK (scope this review to the current module):\n'+self.task+'\nMODULE PLAN (original requirements and test assertions take precedence):\n'+module['contract']+'\nIMPLEMENTATION AND READ-ONLY REFERENCES (test modes for other modules are not requirements for this module):\n'+source_text+'\nEXECUTED TESTS:\n'+test.get('output','')
                         review=self.core.chat('reviewer',review_prompt,self.model)
                         if review.get('verdict')!='ok':
                             self.receipt['attempts'][-1]['initial_module_review']=review
