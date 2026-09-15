@@ -82,14 +82,40 @@ class AutonomousCore(CodeStudioCore):
                                        'model':body.get('model'),'provider':self.config.get('ollama_url')})
         return super().ollama_request(path,body,timeout=min(timeout or self.config.get('timeout_sec',900),max(.1,self.deadline-time.monotonic())))
 
+    def pending_dependency(self, outcome):
+        if outcome.get('status') != 'failed' or outcome.get('returncode') in (None,0): return None
+        output = outcome.get('output','')
+        if 'AssertionError' in output: return None
+        patterns = [r"Error: ENOENT: no such file or directory, open '([^'\r\n]+)'",
+                    r"FileNotFoundError: \[Errno 2\] No such file or directory: '([^'\r\n]+)'"]
+        for pattern in patterns:
+            match = re.search(pattern,output)
+            if not match: continue
+            try:
+                p=pathlib.Path(match.group(1))
+                p=p if p.is_absolute() else self.workspace/p
+                rel=p.resolve().relative_to(self.workspace).as_posix()
+                owner=getattr(self,'future_artifacts',{}).get(rel)
+                if owner and not safe_path(self.workspace,rel,True).exists():
+                    return {'path':rel,'producer_module':owner}
+            except (ValueError,OSError): pass
+        return None
+
     def run_tests(self):
         self.checkpoint()
         if not self.config['tests']:
             return {'status':'deferred', 'returncode':None, 'results':[],
                     'output':'Noch kein unabhängiger Test ausführbar. Modul nur quelltextgeprüft; Gesamttests bleiben verpflichtend.'}
         results = []
+        pending = False
+        if not hasattr(self,'deferred_profiles'): self.deferred_profiles={}
         for profile in self.config['tests']:
             self.checkpoint()
+            key=digest(canonical(profile))
+            cached=self.deferred_profiles.get(key)
+            if cached and cached['dependency']['path'] in getattr(self,'future_artifacts',{}) and not safe_path(self.workspace,cached['dependency']['path'],True).exists():
+                results.append({**cached,'execution':'not_repeated_until_dependency_exists'});pending=True;continue
+            self.deferred_profiles.pop(key,None)
             self.log('Autonom: Projekttest '+str(profile.get('name') or profile['argv'][0]))
             timeout = min(profile.get('timeout_sec', 300), max(.1, self.deadline-time.monotonic()))
             outcome = run_command(profile['argv'], self.workspace, timeout, cancel_event=self.cancel_event)
@@ -97,9 +123,17 @@ class AutonomousCore(CodeStudioCore):
                 outcome={**outcome,'returncode':126,'status':'no_tests','output':outcome['output']+'\nKeine Tests ausgeführt; kein autonomer Abschluss.'}
             row = {**outcome, 'name':profile.get('name') or profile['argv'][0],
                    'output':truncate(redact(outcome['output']), 12000)}
+            dependency=self.pending_dependency(outcome)
+            if dependency:
+                row={**row,'status':'pending_dependency','dependency':dependency}
+                self.deferred_profiles[key]=row
+                results.append(row);pending=True;continue
             results.append(row)
             if outcome['returncode'] != 0:
                 return {**row, 'results':results}
+        if pending:
+            return {'status':'deferred','returncode':None,'results':results,
+                    'output':'Geplante spätere Dateien fehlen; betroffene Tests bleiben ungeprüft.\n'+'\n'.join(x['output'] for x in results)}
         return {'status':'passed', 'returncode':0, 'results':results,
                 'output':'\n'.join(x['output'] for x in results)}
 
@@ -528,6 +562,8 @@ class AutonomousRun:
         for number,module in enumerate(self.workflow['modules'],1):
             self.core.checkpoint(); self.unchanged()
             self.module=module
+            seen={p for m in self.workflow['modules'][:number] for p in m['files']}
+            self.core.future_artifacts = {} if self.request.get('workflow') else {p:m['id'] for m in reversed(self.workflow['modules'][number:]) for p in m['files'] if p not in seen}
             self.core.role_models=module['models']
             checked=list(dict.fromkeys(checked+module['tests']))
             self.core.config['tests']=[self.all_tests[i] for i in checked]
@@ -544,7 +580,7 @@ class AutonomousRun:
                 if feedback: task+='\nTESTDIAGNOSE (vor nächstem Modul beheben):\n'+feedback
                 try:
                     result,test=self.proposal(task)
-                    if test.get('returncode')==0 or (not checked and test.get('status')=='deferred'):
+                    if test.get('returncode')==0 or test.get('status')=='deferred':
                         failed_tests=0
                         self.unchanged()
                         context={}; review_bytes=0
@@ -570,7 +606,7 @@ class AutonomousRun:
                             review_failure=redact(json.dumps(review))
                             raise ProposalRejected(review_failure)
                         self.receipt['steps'].append({'number':number,'id':module['id'],
-                            'status':'verified' if module['tests'] else 'reviewed_pending_tests','proposal_id':result.receipt['tag'],
+                            'status':'verified' if module['tests'] and test.get('status')!='deferred' else 'reviewed_pending_tests','proposal_id':result.receipt['tag'],
                             'tests':checked[:], 'after':{p:self.expected[p] for p in module['files'] if p in self.expected}})
                         self.save(); break
                     feedback=test.get('output','Test fehlgeschlagen')
@@ -635,6 +671,7 @@ class AutonomousRun:
                             '. The defect may be in an earlier module; inspect the current implementation and repair its actual cause.\n'+feedback)
                     raise RunStopped('budget_exhausted','Modul '+module['id']+' nicht verifiziert; abhängige Schritte nicht gestartet.')
         self.module=None; self.core.role_models={}
+        self.core.future_artifacts={}
         self.core.config['tests']=self.all_tests
         self.latest=self.core.run_tests()
         self.unchanged(); self.core.checkpoint()

@@ -227,3 +227,14 @@ diagnostic text is explicitly an unverified hypothesis, never an established roo
 cause. The coder must check it against source and unchanged test requirements.
 
 The final module review includes unchanged declared module files and read-only dependencies, not only files written in the current run. Its complete file identities are recorded; count, per-file and total context limits fail closed instead of silently dropping dependencies.
+
+### Spätere Dateiab­hängigkeiten
+
+Bei automatisch geplanten Modulen kann ein Test eine Datei benötigen, die laut
+Plan erst später entsteht. Nur ein konkreter ENOENT/FileNotFoundError für genau
+eine solche Projektdatei wird als `pending_dependency` gespeichert; der originale
+Fehlercode bleibt im Beleg. Dieser Test wird erst nach Erstellung der Datei erneut
+ausgeführt. Das Modul bleibt bis dahin `reviewed_pending_tests`. Assertionfehler,
+fehlende externe Pakete und fehlende Dateien des aktuellen Moduls bleiben Fehler.
+Die Schlussprüfung führt sämtliche Profile streng aus und erlaubt keine offenen
+Abhängigkeiten. Vorgegebene Modul-Workflows behalten ihre strikte Ausführung.

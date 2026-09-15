@@ -97,6 +97,35 @@ class DirectorTests(unittest.TestCase):
         with patch.object(CodeStudioCore,'chat',return_value=first) as chat:r=self.make_run().execute()['receipt']
         self.assertEqual(r['status'],'blocked');self.assertEqual(chat.call_count,2)
         self.assertFalse((self.project/'values.py').exists());self.assertEqual(len(r['planning_questions']),2)
+    def test_later_planned_file_defers_test_until_actual_dependency_exists(self):
+        (self.project/'test_app.py').write_text("from pathlib import Path\nPath('app.py').read_text()\nfrom app import show\nassert show(4)=='8'\n")
+        plan=workflow();plan['modules'][0]['tests']=[0]
+        replies=iter([plan,create('values.py','def double(n): return n*2\n'),OK,
+            create('app.py','from values import double\ndef show(n): return str(double(n))\n'),OK,OK])
+        with patch.object(CodeStudioCore,'chat',side_effect=lambda *args:next(replies)):r=self.make_run().execute()['receipt']
+        self.assertEqual(r['status'],'succeeded')
+        pending=r['attempts'][0]['test'];self.assertEqual(pending['status'],'deferred');self.assertIsNone(pending['returncode'])
+        row=pending['results'][0];self.assertNotEqual(row['returncode'],0);self.assertEqual(row['dependency'],{'path':'app.py','producer_module':'app'})
+        self.assertEqual(r['steps'][0]['status'],'reviewed_pending_tests');self.assertEqual(r['attempts'][1]['test']['returncode'],0)
+        self.assertEqual(r['test']['returncode'],0)
+    def test_assertions_external_packages_and_absent_current_files_are_not_deferred(self):
+        run=self.make_run();core=run.core;core.future_artifacts={'app.py':'app'}
+        cases=["AssertionError: expected feature", "ModuleNotFoundError: No module named 'external'",
+               "FileNotFoundError: [Errno 2] No such file or directory: 'current.py'",
+               "FileNotFoundError: [Errno 2] No such file or directory: '../app.py'"]
+        for text in cases:
+            with self.subTest(text=text):self.assertIsNone(core.pending_dependency({'status':'failed','returncode':1,'output':text}))
+        core.future_artifacts={}
+        self.assertIsNone(core.pending_dependency({'status':'failed','returncode':1,'output':"FileNotFoundError: [Errno 2] No such file or directory: 'app.py'"}))
+    def test_same_missing_dependency_is_not_reexecuted_and_final_gate_remains_strict(self):
+        run=self.make_run();core=run.core;core.future_artifacts={'app.py':'app'}
+        failure={'status':'failed','returncode':1,'output':"FileNotFoundError: [Errno 2] No such file or directory: 'app.py'"}
+        with patch('autonomy.run_command',return_value=failure) as command:
+            self.assertEqual(core.run_tests()['status'],'deferred')
+            self.assertEqual(core.run_tests()['status'],'deferred');self.assertEqual(command.call_count,1)
+            core.future_artifacts={}
+            final=core.run_tests();self.assertEqual(final['status'],'failed');self.assertEqual(final['returncode'],1)
+            self.assertEqual(command.call_count,2)
     def test_protected_future_and_invented_profiles_rejected(self):
         for key,value in [('files',['test_app.py']),('references',['app.py']),('tests',[99]),('models',{'coder':'invented'})]:
             plan=workflow();plan['modules'][0][key]=value
