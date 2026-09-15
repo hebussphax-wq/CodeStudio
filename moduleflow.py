@@ -23,7 +23,9 @@ def normalize_workflow(value, test_count, max_steps, allow_pending_tests=False):
                 raise ValueError('Begrenzte Modulpfade erforderlich.')
             if len({relative(p).casefold() for p in values})!=len(values): raise ValueError('Mehrdeutige Modulpfade.')
         if not paths: raise ValueError('Modul benötigt Schreibpfade.')
-        if {relative(p).casefold() for p in paths}&{relative(p).casefold() for p in refs}: raise ValueError('Lese- und Schreibpfade müssen getrennt sein.')
+        # SoftKI: write wins - drop references that are also write targets before validate.
+        write_fold = {relative(p).casefold() for p in paths}
+        refs = [p for p in refs if relative(p).casefold() not in write_fold]
         dependencies=row.get('depends_on',[])
         if not isinstance(dependencies,list) or any(not isinstance(d,str) or d not in seen for d in dependencies):
             raise ValueError('Abhängigkeiten müssen vorherige Module bezeichnen.')
