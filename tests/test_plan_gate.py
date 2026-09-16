@@ -10,6 +10,7 @@ from plan_gate import (
     ensure_checks,
     lint_plan_acceptance,
     normalize_acceptance,
+    promote_executable_prose,
     rewrite_check_for_windows,
 )
 
@@ -187,6 +188,53 @@ class PlanGateTests(unittest.TestCase):
             self.assertEqual(len(out), 1)
             self.assertEqual(out[0]["argv"][0], "python")
             self.assertTrue(str(out[0]["argv"][1]).endswith("script.py"))
+
+
+    def test_promote_unittest_prose_with_all_quantifier(self):
+        """Empty checks + prose with unittest and word 'all' → promote, lint OK."""
+        plan = {
+            "acceptance": {
+                "checks": [],
+                "prose": ["python -m unittest discover -v passes all tests"],
+            }
+        }
+        lint_plan_acceptance(plan)
+        checks = plan["acceptance"]["checks"]
+        self.assertTrue(checks, "expected promoted check")
+        self.assertEqual(
+            checks[0]["argv"],
+            ["python", "-m", "unittest", "discover", "-v"],
+        )
+        # Quantifier-only residue must not remain without checks (lint already passed).
+        self.assertTrue(plan["acceptance"]["checks"])
+
+    def test_promote_executable_prose_direct(self):
+        acc = {
+            "checks": [],
+            "prose": ["python -m unittest discover -v passes all tests"],
+        }
+        promote_executable_prose(acc)
+        self.assertEqual(len(acc["checks"]), 1)
+        self.assertEqual(acc["checks"][0]["argv"][0], "python")
+        self.assertIn("unittest", acc["checks"][0]["argv"])
+
+    def test_promote_path_exists_prose(self):
+        acc = {"checks": [], "prose": ["solutions.py exists"]}
+        promote_executable_prose(acc)
+        self.assertEqual(len(acc["checks"]), 1)
+        self.assertEqual(acc["checks"][0].get("path"), "solutions.py")
+
+    def test_lint_still_rejects_pure_quantifier_prose(self):
+        """Pure quantifier prose without runnable command still rejects."""
+        plan = {"acceptance": {"checks": [], "prose": ["all tests must pass"]}}
+        with self.assertRaises(ValueError) as ctx:
+            lint_plan_acceptance(plan)
+        self.assertIn("SoftKI-Plan-Gate", str(ctx.exception))
+
+    def test_lint_rejects_german_quantifier_without_command(self):
+        plan = {"acceptance": ["Jede Leiter verbindet eine Plattform"]}
+        with self.assertRaises(ValueError):
+            lint_plan_acceptance(plan)
 
 
 if __name__ == "__main__":

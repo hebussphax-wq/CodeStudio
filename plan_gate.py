@@ -2,16 +2,22 @@
 from __future__ import annotations
 
 import os
+import shlex
 import pathlib
 import re
 import sys
 from typing import Any
 
 
+# Concrete host Path class (captured at import). Unit tests may patch os.name to "nt"
+# on Linux; pathlib.Path would then try WindowsPath and fail — use _HOST_PATH instead.
+_HOST_PATH = pathlib.WindowsPath if os.name == "nt" else pathlib.PosixPath
+
+
 def _workspace_rel(workspace: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
     """Relative path under workspace; tolerate Windows 8.3 vs long-path resolve mismatch."""
-    ws = pathlib.Path(os.path.realpath(workspace))
-    target = pathlib.Path(os.path.realpath(path))
+    ws = _HOST_PATH(os.path.realpath(str(workspace)))
+    target = _HOST_PATH(os.path.realpath(str(path)))
     try:
         return target.relative_to(ws)
     except ValueError as exc:
@@ -32,7 +38,7 @@ _UNIX_ONLY_CMDS = frozenset({"ls", "cat", "true", "false", "test", "grep", "egre
 def _path_exists_argv(workspace: pathlib.Path, rel: str) -> list[str]:
     """Build python argv that exits 0 iff workspace-relative path is a file."""
     rel_n = rel.replace("\\", "/").lstrip("./")
-    p = pathlib.Path(os.path.realpath(workspace / rel_n))
+    p = _HOST_PATH(os.path.realpath(str(workspace / rel_n)))
     try:
         _workspace_rel(workspace, p)
     except ValueError as exc:
@@ -64,7 +70,7 @@ def _grep_content_argv(workspace: pathlib.Path, argv: list[str]) -> list[str]:
     if len(args) < 2:
         raise ValueError("grep-Check braucht Dateipfad.")
     rel = args[1].replace("\\", "/").lstrip("./")
-    p = pathlib.Path(os.path.realpath(workspace / rel))
+    p = _HOST_PATH(os.path.realpath(str(workspace / rel)))
     try:
         _workspace_rel(workspace, p)
     except ValueError as exc:
@@ -189,9 +195,150 @@ def normalize_acceptance(raw: Any, workspace: pathlib.Path | None = None) -> dic
     return {"checks": checks, "prose": prose}
 
 
+# Prose → check promotion (script-before-model): extract runnable cmds / path exists.
+_CMD_STOP_RE = re.compile(
+    r"(?i)\s+(?:passes?|passing|returns?|succeeds?|fails?|failed|ok|okay|"
+    r"successfully|with\s+exit|and\s+then|muss|must|should|soll)\b.*$"
+)
+_OUTCOME_ONLY_RE = re.compile(
+    r"(?i)^(?:passes?|passing|returns?|succeeds?|fails?|failed|ok|okay|"
+    r"successfully|with\s+exit|and\s+then|muss|must|should|soll)\b.*$"
+)
+_CMD_HEADS = frozenset({"python", "python3", "py", "node", "pytest"})
+_PATH_EXISTS_RE = re.compile(
+    r"(?i)(?:\bfile\s+([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+)\b)"
+    r"|(?:\b([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+)\s+exists\b)"
+)
+_CMD_FIND_RE = re.compile(
+    r"(?i)(?:^|[\s`\"'])((?:python3?|py|node|pytest)\b[^\n]*)"
+)
+
+
+def _extract_runnable_argv(line: str) -> list[str] | None:
+    """Pull python/node/pytest argv from a prose line; strip trailing outcome prose."""
+    stripped = line.strip()
+    m = _CMD_FIND_RE.search(stripped)
+    if not m and not re.match(r"(?i)^(?:python3?|py|node|pytest)\b", stripped):
+        return None
+    raw = m.group(1) if m else stripped
+    raw = raw.strip().strip("`\"'")
+    raw = _CMD_STOP_RE.sub("", raw).strip().rstrip("`\"',.;:")
+    if not raw:
+        return None
+    try:
+        argv = shlex.split(raw, posix=True)
+    except ValueError:
+        argv = raw.split()
+    if not argv:
+        return None
+    head = pathlib.Path(argv[0]).name.lower()
+    if head.endswith(".exe"):
+        head = head[:-4]
+    if head not in _CMD_HEADS:
+        return None
+    if head in ("python", "python3", "py") and len(argv) < 2:
+        return None
+    if head == "node" and len(argv) < 2:
+        return None
+    return argv
+
+
+def _extract_path_from_prose(line: str) -> str | None:
+    """Detect 'file X' / 'X exists' path mentions in prose."""
+    m = _PATH_EXISTS_RE.search(line)
+    if not m:
+        return None
+    rel = (m.group(1) or m.group(2) or "").strip().replace("\\", "/")
+    if not rel or ".." in pathlib.PurePosixPath(rel).parts:
+        return None
+    return rel.lstrip("./")
+
+
+def promote_executable_prose(acc: dict) -> dict:
+    """Promote runnable command / path-exists prose into acceptance.checks.
+
+    Mutates and returns acc. Leaves non-command prose; drops command-only lines
+    once turned into checks. Idempotent if checks already cover the same argv/path.
+    """
+    if not isinstance(acc, dict):
+        return acc
+    checks = list(acc.get("checks") or [])
+    prose_in = list(acc.get("prose") or [])
+    seen_argv: set[tuple[str, ...]] = set()
+    seen_path: set[str] = set()
+    for c in checks:
+        if isinstance(c, dict) and "argv" in c and isinstance(c["argv"], list):
+            seen_argv.add(tuple(c["argv"]))
+        if isinstance(c, dict) and isinstance(c.get("path"), str) and c["path"].strip():
+            seen_path.add(c["path"].strip().replace("\\", "/").lstrip("./"))
+
+    prose_out: list[str] = []
+    for line in prose_in:
+        text = str(line).strip()
+        if not text:
+            continue
+        argv = _extract_runnable_argv(text)
+        if argv:
+            key = tuple(argv)
+            if key not in seen_argv:
+                name = "promoted-" + pathlib.Path(argv[0]).name.lower()
+                if len(argv) >= 3 and argv[1] == "-m":
+                    name = "promoted-" + argv[2]
+                elif len(argv) >= 2:
+                    name = "promoted-" + pathlib.Path(argv[-1]).name
+                checks.append({"name": name, "argv": list(argv), "timeout_sec": 300})
+                seen_argv.add(key)
+            # Keep residual prose after stripping the command, else drop command-only.
+            residual = text
+            joined = " ".join(argv)
+            idx = residual.lower().find(joined.lower())
+            if idx >= 0:
+                residual = (residual[:idx] + residual[idx + len(joined) :]).strip(" -–—,:;")
+                residual = _CMD_STOP_RE.sub("", residual).strip(" -–—,:;")
+            else:
+                residual = _CMD_STOP_RE.sub("", residual)
+                residual = re.sub(
+                    r"(?i)^(?:[`\"']?)(?:python3?|py|node|pytest)\b[^\n]*",
+                    "",
+                    residual,
+                ).strip(" -–—,:;")
+            residual = _OUTCOME_ONLY_RE.sub("", residual).strip(" -–—,:;")
+            if residual and not _extract_runnable_argv(residual):
+                prose_out.append(residual)
+            continue
+
+        rel = _extract_path_from_prose(text)
+        if rel:
+            if rel not in seen_path:
+                checks.append({"name": "promoted-" + pathlib.Path(rel).name, "path": rel})
+                seen_path.add(rel)
+            # Path-only existence lines drop; richer prose stays.
+            path_only = re.fullmatch(
+                r"(?i)(?:file\s+)?"
+                + re.escape(rel)
+                + r"(?:\s+exists)?[.!]?",
+                text.replace("\\", "/"),
+            )
+            if path_only:
+                continue
+            prose_out.append(text)
+            continue
+
+        prose_out.append(text)
+
+    acc["checks"] = checks
+    acc["prose"] = prose_out
+    return acc
+
+
 def lint_plan_acceptance(plan: dict) -> None:
-    """Reject prose with quantifiers when no executable checks exist."""
+    """Reject prose with quantifiers when no executable checks exist.
+
+    Promotes runnable command / path-exists prose into checks first so planner
+    lines like 'python -m unittest … passes all tests' do not stall the gate.
+    """
     acc = normalize_acceptance(plan.get("acceptance"))
+    promote_executable_prose(acc)
     plan["acceptance"] = acc
     if acc["checks"]:
         return
@@ -204,7 +351,7 @@ def lint_plan_acceptance(plan: dict) -> None:
 
 def _bind_path_check(workspace: pathlib.Path, name: str, rel: str) -> dict:
     rel = rel.replace("\\", "/").lstrip("./")
-    p = pathlib.Path(os.path.realpath(workspace / rel))
+    p = _HOST_PATH(os.path.realpath(str(workspace / rel)))
     try:
         _workspace_rel(workspace, p)
     except ValueError as exc:

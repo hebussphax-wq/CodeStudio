@@ -677,9 +677,10 @@ class AutonomousRun:
                   '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
         if not self.all_tests:
             prompt += ('\nSOFTKI: No prefilled config.tests. Return acceptance as object with checks '
-                       '(each check: name + argv string list OR path to an existing test file) and prose. '
+                       '(each check: name + argv string list OR path) and prose. '
+                       'Path checks may name files the run will create; only existing tests/scripts are executed immediately. '
                        'Quantified prose without checks is rejected. Module test indices refer to those checks once bound. '
-                       'On Windows, acceptance.checks must use path or python argv, not Unix test/grep.')
+                       'On Windows, acceptance.checks must use path or python argv, not Unix test/grep. Put unittest/pytest in acceptance.checks as argv, not only in prose.')
         prompt+='\nEXPLICIT FILE-CONTRACT OUTPUTS (every absent file needs a producing module):\n'+json.dumps(required_files)
         if self.request.get('resume_from') and not repair_feedback:
             prompt+='\nRESTORED CANDIDATE FILES (include every file in a module; unchanged files may be revalidated without edits):\n'+json.dumps(sorted(self.tx.files))
