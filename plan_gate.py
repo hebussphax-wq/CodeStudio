@@ -7,6 +7,16 @@ import re
 import sys
 from typing import Any
 
+
+def _workspace_rel(workspace: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
+    """Relative path under workspace; tolerate Windows 8.3 vs long-path resolve mismatch."""
+    ws = pathlib.Path(os.path.realpath(workspace))
+    target = pathlib.Path(os.path.realpath(path))
+    try:
+        return target.relative_to(ws)
+    except ValueError as exc:
+        raise ValueError("Check-Pfad ausserhalb Workspace: " + str(path)) from exc
+
 QUANTIFIER_RE = re.compile(
     r"(?i)\b("
     r"jede|jeder|jedes|alle|allem|allen|mindestens|höchstens|genau|"
@@ -22,9 +32,9 @@ _UNIX_ONLY_CMDS = frozenset({"ls", "cat", "true", "false", "test", "grep", "egre
 def _path_exists_argv(workspace: pathlib.Path, rel: str) -> list[str]:
     """Build python argv that exits 0 iff workspace-relative path is a file."""
     rel_n = rel.replace("\\", "/").lstrip("./")
-    p = (workspace / rel_n).resolve()
+    p = pathlib.Path(os.path.realpath(workspace / rel_n))
     try:
-        p.relative_to(workspace.resolve())
+        _workspace_rel(workspace, p)
     except ValueError as exc:
         raise ValueError("Check-Pfad ausserhalb Workspace: " + rel_n) from exc
     code = (
@@ -54,9 +64,9 @@ def _grep_content_argv(workspace: pathlib.Path, argv: list[str]) -> list[str]:
     if len(args) < 2:
         raise ValueError("grep-Check braucht Dateipfad.")
     rel = args[1].replace("\\", "/").lstrip("./")
-    p = (workspace / rel).resolve()
+    p = pathlib.Path(os.path.realpath(workspace / rel))
     try:
-        p.relative_to(workspace.resolve())
+        _workspace_rel(workspace, p)
     except ValueError as exc:
         raise ValueError("Check-Pfad ausserhalb Workspace: " + rel) from exc
     code = (
@@ -194,19 +204,18 @@ def lint_plan_acceptance(plan: dict) -> None:
 
 def _bind_path_check(workspace: pathlib.Path, name: str, rel: str) -> dict:
     rel = rel.replace("\\", "/").lstrip("./")
-    p = (workspace / rel).resolve()
+    p = pathlib.Path(os.path.realpath(workspace / rel))
     try:
-        p.relative_to(workspace.resolve())
+        _workspace_rel(workspace, p)
     except ValueError as exc:
         raise ValueError("Check-Pfad ausserhalb Workspace: " + rel) from exc
     suf = p.suffix.lower()
-    # SoftKI path form for runnable tests (must exist now)
-    if suf in (".py", ".cjs", ".mjs", ".js"):
-        if not p.is_file():
-            raise ValueError("Check-Datei fehlt: " + rel)
+    # Existing runnable scripts/tests: bind as executable now.
+    # Missing path (incl. .py/.js run outputs): deferred existence so coder can create first.
+    if suf in (".py", ".cjs", ".mjs", ".js") and p.is_file():
         if suf == ".py":
             if "tests" in p.parts:
-                mod = ".".join(p.with_suffix("").relative_to(workspace).parts)
+                mod = ".".join(_workspace_rel(workspace, p.with_suffix("")).parts)
                 return {
                     "name": name,
                     "argv": ["python", "-m", "unittest", mod, "-v"],
@@ -214,7 +223,6 @@ def _bind_path_check(workspace: pathlib.Path, name: str, rel: str) -> dict:
                 }
             return {"name": name, "argv": ["python", str(p)], "timeout_sec": 300}
         return {"name": name, "argv": ["node", "--test", str(p)], "timeout_sec": 300}
-    # SoftKI path-check form for existence (from rewritten test -f/-e); may appear after coder
     return {
         "name": name,
         "argv": _path_exists_argv(workspace, rel),
