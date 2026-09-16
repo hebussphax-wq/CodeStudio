@@ -129,6 +129,23 @@ def acceptance_rows_for_validation(raw):
     raise ValueError('Ungültige Planangaben: acceptance')
 
 
+
+def sanitize_module_test_indices(plan, test_count):
+    """Defense-in-depth: drop invalid module test indices before normalize_workflow."""
+    if not isinstance(plan, dict):
+        return plan
+    n = int(test_count) if type(test_count) is int else 0
+    modules = plan.get('modules')
+    if not isinstance(modules, list):
+        return plan
+    for m in modules:
+        if not isinstance(m, dict):
+            continue
+        tests = m.get('tests')
+        if isinstance(tests, list):
+            m['tests'] = [i for i in tests if type(i) is int and 0 <= i < n]
+    return plan
+
 def validate_director(value, test_count, max_steps, protected, existing, *, final_tests=True, required_files=(), retained_files=()):
     if not isinstance(value, dict): raise ValueError('Arbeitsplan muss ein Objekt sein.')
     # SoftKI Planvertrag: acceptance may be list OR {checks, prose}. Preserve object on plan.
@@ -161,6 +178,10 @@ def validate_director(value, test_count, max_steps, protected, existing, *, fina
             raise PlanValidationError(prefix+'.outcomes', 'Jedes automatisch geplante Modul benötigt 1–8 beobachtbare Ergebnisse.')
         outcomes = [description(x, prefix+'.outcomes['+str(j)+']') for j,x in enumerate(outcomes)]
         module['contract'] = behavior+'\nOBSERVABLE MODULE OUTCOMES:\n'+'\n'.join('- '+x for x in outcomes)
+    # SoftKI: sanitize out-of-range planner indices before moduleflow rejects the plan.
+    for module in modules:
+        if isinstance(module, dict) and isinstance(module.get('tests'), list):
+            module['tests'] = [i for i in module['tests'] if type(i) is int and 0 <= i < test_count]
     flow = normalize_workflow({'schema':'codestudio.modules.v1', 'modules':modules},
                               test_count, max_steps, allow_pending_tests=True)
     if any('models' in m for m in value['modules']): raise ValueError('Modelle bleiben durch den Aufrufer bestimmt.')
