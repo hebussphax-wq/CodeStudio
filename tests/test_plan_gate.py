@@ -129,5 +129,65 @@ class PlanGateTests(unittest.TestCase):
             self.assertEqual(plan["acceptance"]["checks"][0].get("path"), "hello_planvertrag.txt")
 
 
+
+    def test_missing_solutions_py_binds_deferred_exists(self):
+        """Run-output path like solutions.py must bind without raise (coder creates later)."""
+        with tempfile.TemporaryDirectory() as d:
+            ws = pathlib.Path(d)
+            plan = {
+                "acceptance": {
+                    "prose": [],
+                    "checks": [{"name": "solutions", "path": "solutions.py"}],
+                }
+            }
+            out = ensure_checks(ws, plan, existing_tests=[])
+            self.assertEqual(len(out), 1)
+            self.assertEqual(out[0]["argv"][1], "-c")
+            self.assertIn("is_file", out[0]["argv"][2])
+            # path appears inside the -c snippet (absolute); suffix is enough
+            self.assertTrue(
+                "solutions.py" in out[0]["argv"][2]
+                or out[0]["argv"][2].endswith("solutions.py')")
+            )
+
+    def test_existing_tests_py_binds_unittest(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = pathlib.Path(d)
+            tests = ws / "tests"
+            tests.mkdir()
+            (tests / "__init__.py").write_text("", encoding="utf-8")
+            (tests / "foo.py").write_text(
+                "import unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            plan = {
+                "acceptance": {
+                    "prose": [],
+                    "checks": [{"name": "foo", "path": "tests/foo.py"}],
+                }
+            }
+            out = ensure_checks(ws, plan, existing_tests=[])
+            self.assertEqual(len(out), 1)
+            self.assertEqual(out[0]["argv"][:4], ["python", "-m", "unittest", "tests.foo"])
+
+    def test_existing_non_test_py_binds_python_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = pathlib.Path(d)
+            (ws / "script.py").write_text("print(1)\n", encoding="utf-8")
+            plan = {
+                "acceptance": {
+                    "prose": [],
+                    "checks": [{"name": "script", "path": "script.py"}],
+                }
+            }
+            out = ensure_checks(ws, plan, existing_tests=[])
+            self.assertEqual(len(out), 1)
+            self.assertEqual(out[0]["argv"][0], "python")
+            self.assertTrue(str(out[0]["argv"][1]).endswith("script.py"))
+
+
 if __name__ == "__main__":
     unittest.main()
