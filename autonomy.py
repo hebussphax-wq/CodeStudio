@@ -253,6 +253,27 @@ class AutonomousRun:
             if profile and profile in passed:
                 self.problem_counts.pop(key,None);self.problem_profiles.pop(key,None)
 
+
+    @staticmethod
+    def sanitize_module_test_indices(plan, test_count):
+        """Drop out-of-range / non-int module test indices before director validate.
+
+        Empty lists stay empty (pending OK with allow_pending_tests). Mutates plan modules in place.
+        """
+        if not isinstance(plan, dict):
+            return plan
+        n = int(test_count) if type(test_count) is int else 0
+        modules = plan.get('modules')
+        if not isinstance(modules, list):
+            return plan
+        for m in modules:
+            if not isinstance(m, dict):
+                continue
+            tests = m.get('tests')
+            if isinstance(tests, list):
+                m['tests'] = [i for i in tests if type(i) is int and 0 <= i < n]
+        return plan
+
     def bind_plan_checks(self, plan):
         """Lint acceptance and bind executable checks before any coder write."""
         if not isinstance(plan, dict):
@@ -673,12 +694,14 @@ class AutonomousRun:
         prompt = ('ORIGINAL TASK:\n'+self.task+'\nMAXIMUM MODULES: '+str(self.limits['steps'])+
                   '\nAVAILABLE TEST PROFILES (indices are the only permitted test selections):\n'+
                   json.dumps([{'index':i, **p} for i,p in enumerate(self.all_tests)], ensure_ascii=False)+
-                  '\nFILE TREE:\n'+'\n'.join(tree)+'\nOMITTED FROM PLANNING CONTEXT (still protected; reference relevant files in module references):\n'+json.dumps(omitted)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
+                  '\nOnly use test indices from the AVAILABLE TEST PROFILES list.\nFILE TREE:\n'+'\n'.join(tree)+'\nOMITTED FROM PLANNING CONTEXT (still protected; reference relevant files in module references):\n'+json.dumps(omitted)+'\nREAD-ONLY PROJECT CONTRACTS:\n'+
                   '\n\n'.join('FILE '+p+'\n'+t for p,t in context.items()))
         if not self.all_tests:
             prompt += ('\nSOFTKI: No prefilled config.tests. Return acceptance as object with checks '
-                       '(each check: name + argv string list OR path to an existing test file) and prose. '
-                       'Quantified prose without checks is rejected. Module test indices refer to those checks once bound.')
+                       '(each check: name + argv string list OR path) and prose. '
+                       'Path checks may name files the run will create; only existing tests/scripts are executed immediately. '
+                       'Quantified prose without checks is rejected. Module test indices refer to those checks once bound. '
+                       'On Windows, acceptance.checks must use path or python argv, not Unix test/grep. Put unittest/pytest in acceptance.checks as argv, not only in prose. Only use test indices from the AVAILABLE TEST PROFILES list.')
         prompt+='\nEXPLICIT FILE-CONTRACT OUTPUTS (every absent file needs a producing module):\n'+json.dumps(required_files)
         if self.request.get('resume_from') and not repair_feedback:
             prompt+='\nRESTORED CANDIDATE FILES (include every file in a module; unchanged files may be revalidated without edits):\n'+json.dumps(sorted(self.tx.files))
@@ -715,6 +738,9 @@ class AutonomousRun:
                         if value.get('acceptance') is not None or value.get('checks') is not None:
                             seed = value if 'acceptance' in value else {'acceptance': {'checks': value.get('checks', []), 'prose': value.get('prose', [])}}
                             self.bind_plan_checks(seed)
+                    # SoftKI: planner may cite stale/out-of-range indices after bind shrinks profiles.
+                    if isinstance(value, dict):
+                        self.sanitize_module_test_indices(value, len(self.all_tests))
                     workflow = validate_director(value, len(self.all_tests), self.limits['steps'], self.protected, tree,
                                                  final_tests=not interim_repair, required_files=() if repair_feedback else required_files,
                                                  retained_files=self.tx.files if self.request.get('resume_from') and not repair_feedback else ())
